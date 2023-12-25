@@ -39,7 +39,7 @@ from .utils import *
 
 
 class AlphaTuner:
-    def __init__(self, model, dataloader, input_info, auto_alpha_args, layers_info, device, sq_info, block_info):
+    def __init__(self, model, dataloader, input_info, auto_alpha_args, layers_info, device, sq_info, block_info=None):
         """Initialize the AlphaTuner with necessary parameters and components."""
         self.model = model
         self.dataloader = dataloader
@@ -171,20 +171,6 @@ class AlphaTuner:
                 continue
             set_module(self.model, name, module.orig_layer)
 
-    def _reshape_in_channel_to_last(self, layer_name):
-        """Move the input channel to the last dim
-        :param layer_name: Layer name
-        :return: The reshaped weight."""
-        layer = get_module(self.model, layer_name)
-        if layer.__class__.__name__ == "WrapperLayer":
-            layer = layer.orig_layer
-
-        weight = layer.weight  ##TODO oc*ic, support transposed conv
-        if len(weight.shape) == 4:
-            weight = weight.permute(0, 2, 3, 1)
-            weight = weight.reshape(-1, weight.shape[-1])
-        return weight
-
     def _cal_scales(self, absorb_to_layer, input_maxes, alpha=0.5, tuning=False):
         """Cal the adjust scales
         :param absorb_to_layer: A dict mapping absorb layer to smooth quantized layer
@@ -207,7 +193,7 @@ class AlphaTuner:
                 layer_names = absorb_to_layer[key]
                 weights = []
                 for layer_name in layer_names:
-                    weight = self._reshape_in_channel_to_last(layer_name)
+                    weight = _reshape_in_channel_to_last(layer_name, self.model)
                     weights.append(weight)
 
                 weight_max_per_channel = torch.max(torch.abs(torch.cat(weights, dim=0)), dim=0)[0]
@@ -581,7 +567,7 @@ class AlphaTuner:
                 if total_cnt >= self.calib_sample_num:
                     break
 
-        best_alphas = self._get_best_alpha(self.absorb_to_layer, loss_alphas, shared_criterion)
+        best_alphas = self._get_best_alpha(self.absorb_to_layer, loss_alphas, self.shared_criterion)
         for key in best_alphas.keys():
             logger.info(f"Final alpha {key}:{best_alphas[key]}")
 
@@ -704,3 +690,78 @@ class AlphaTuner:
         logger.info("block-wise auto tuning done")
 
         return best_alphas
+
+
+
+
+def _reshape_in_channel_to_last(layer_name, model):
+    """Move the input channel to the last dim
+    :param layer_name: Layer name
+    :return: The reshaped weight."""
+    layer = get_module(model, layer_name)
+    if layer.__class__.__name__ == "WrapperLayer":
+        layer = layer.orig_layer
+
+    weight = layer.weight  ##TODO oc*ic, support transposed conv
+    if len(weight.shape) == 4:
+        weight = weight.permute(0, 2, 3, 1)
+        weight = weight.reshape(-1, weight.shape[-1])
+    return weight
+
+# def _cal_scales(absorb_to_layer, input_maxes, alpha=0.5, tuning=False, device, model):
+#     """Cal the adjust scales
+#     :param absorb_to_layer: A dict mapping absorb layer to smooth quantized layer
+#     :param input_maxes: The channel-wise input max info for layers
+#     :param alpha: Alpha value to balance the quantization difficulty of activation and weight, a float of a dict
+#     :return:"""
+#     absorb_to_input_maxes = {}
+#     for key in absorb_to_layer.keys():
+#         layer_name = absorb_to_layer[key][0]
+#         absorb_to_input_maxes[key] = input_maxes[layer_name]
+
+#     weight_scales_info = {}
+#     absorb_scales_info = {}
+#     for index, key in enumerate(absorb_to_layer.keys()):
+#         alpha_tmp = alpha[key] if isinstance(alpha, dict) else alpha
+#         if alpha_tmp < 0:
+#             scale = torch.ones((1), device=device)
+#         else:
+#             input_max = absorb_to_input_maxes[key]
+#             layer_names = absorb_to_layer[key]
+#             weights = []
+#             for layer_name in layer_names:
+#                 weight = _reshape_in_channel_to_last(layer_name, model=model)
+#                 weights.append(weight)
+
+#             weight_max_per_channel = torch.max(torch.abs(torch.cat(weights, dim=0)), dim=0)[0]
+#             if self.weight_clip:
+#                 weight_max_per_channel = weight_max_per_channel.clamp(min=1e-5)
+#             if self.record_max_info and not tuning:
+#                 # the input of layers with same absorb layer is the same.
+#                 input_minmax = [self.input_mins[layer_names[0]], self.input_maxes[layer_names[0]]]
+#                 self.max_value_info[key] = {}
+#                 self.max_value_info[key]["alpha"] = alpha_tmp
+#                 self.max_value_info[key]["input_minmax"] = input_minmax
+#                 self.max_value_info[key]["weight_max"] = weight_max_per_channel
+#                 self.max_value_info[key]["absorbed_layer"] = layer_names
+#                 continue
+
+#             if self._save_scale:
+#                 if key in self.weight_scale_dict and alpha_tmp in self.weight_scale_dict[key]:
+#                     scale = self.weight_scale_dict[key][alpha_tmp]
+#                 else:
+#                     scale = cal_scale(input_max, weights, alpha_tmp)
+#             else:
+#                 scale = cal_scale(input_max, weights, alpha_tmp)
+
+#         absorb_scales_info[key] = 1.0 / scale
+#         absorb_scales_info[key][scale == 0] = 0
+#         layer_names = absorb_to_layer[key]
+#         for layer_name in layer_names:
+#             ##self._scale_layer_weight(layer_name, scale)
+#             weight_scales_info[layer_name] = scale
+#             if self._save_scale:
+#                 if layer_name not in self.weight_scale_dict:
+#                     self.weight_scale_dict[layer_name] = {}
+#                 self.weight_scale_dict[layer_name][alpha_tmp] = scale
+#     return absorb_scales_info, weight_scales_info

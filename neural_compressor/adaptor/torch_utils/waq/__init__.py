@@ -12,6 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from graph_trace import GraphTrace
-from smooth_quant import TorchSmoothQuant
-from utils import set_module, get_module, move_input_to_device, quant_dequant_w, model_forward
+from .graph_trace import GraphTrace
+from .smooth_quant import TorchSmoothQuant
+from .utils import set_module, get_module, move_input_to_device, quant_dequant_w, model_forward

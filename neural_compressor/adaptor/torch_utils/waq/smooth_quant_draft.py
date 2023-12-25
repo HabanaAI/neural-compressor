@@ -37,6 +37,7 @@ from tqdm import tqdm
 
 from .graph_trace import GraphTrace
 from .utils import *
+from .auto_tune import _reshape_in_channel_to_last
 
 
 class TorchSmoothQuant:
@@ -169,20 +170,6 @@ class TorchSmoothQuant:
             assert self.dataloader, "Please set dataloader for calibration."
             model_forward(self.model, self.dataloader, calib_iter, self.device)
 
-    def _reshape_in_channel_to_last(self, layer_name):
-        """Move the input channel to the last dim
-        :param layer_name: Layer name
-        :return: The reshaped weight."""
-        layer = get_module(self.model, layer_name)
-        if layer.__class__.__name__ == "WrapperLayer":
-            layer = layer.orig_layer
-
-        weight = layer.weight  ##TODO oc*ic, support transposed conv
-        if len(weight.shape) == 4:
-            weight = weight.permute(0, 2, 3, 1)
-            weight = weight.reshape(-1, weight.shape[-1])
-        return weight
-
     def get_blocks(self):
         block_names = []
         for n, m in self.model.named_modules():
@@ -301,7 +288,7 @@ class TorchSmoothQuant:
                 layer_names = absorb_to_layer[key]
                 weights = []
                 for layer_name in layer_names:
-                    weight = self._reshape_in_channel_to_last(layer_name)
+                    weight = _reshape_in_channel_to_last(layer_name, self.model)
                     weights.append(weight)
 
                 weight_max_per_channel = torch.max(torch.abs(torch.cat(weights, dim=0)), dim=0)[0]
@@ -580,9 +567,11 @@ class TorchSmoothQuant:
                         "input_maxes": self.input_maxes,
                         "input_maxes_abs": self.input_maxes_abs,
                     }
+                    auto_alpha_args['default_alpha'] = default_alpha
+                    auto_alpha_args['calib_sample_num'] = 32
                     if self.do_blockwise:
                         block_info = {"block_names": {self.block_names}, "block_to_module": self.block_to_module}
-                        self.alpha_per_layer = AlphaTuner._auto_tune_alpha_blockwise(
+                        auto_tuner = AlphaTuner(
                             model=self.model,
                             dataloader=self.dataloader,
                             input_info=input_info,
@@ -592,8 +581,9 @@ class TorchSmoothQuant:
                             sq_info=sq_info,
                             block_info=block_info,
                         )
-                    else:
-                        self.alpha_per_layer = AlphaTuner._auto_tune_alpha(
+                        self.alpha_per_layer = auto_tuner._auto_tune_alpha_blockwise()
+                    else: #(self, model, dataloader, input_info, auto_alpha_args, layers_info, device, sq_info, block_info):
+                        auto_tuner= AlphaTuner(
                             model=self.model,
                             dataloader=self.dataloader,
                             input_info=input_info,
@@ -602,6 +592,7 @@ class TorchSmoothQuant:
                             device=self.device,
                             sq_info=sq_info,
                         )
+                        self.alpha_per_layer = auto_tuner._auto_tune_alpha()
 
             if alpha == "auto":
                 alpha = self.alpha_per_layer
