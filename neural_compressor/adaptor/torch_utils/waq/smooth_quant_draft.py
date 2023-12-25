@@ -564,24 +564,44 @@ class TorchSmoothQuant:
                 self._save_scale = enough_memo_store_scale(self.device, scale_memo_use)
 
                 if alpha == "auto":
-                    from .auto_tune import AlphaTuner # Call 
-                    layers_info = {'absorb_to_layer': self.absorb_to_layer} 
-                    sq_info = {'op_types': op_types, 'record_max_info': self.record_max_info,\
-                        'insert_mul': self.insert_mul, 'allow_absorb': self.allow_absorb,\
-                        'weight_clip': self.weight_clip, '_save_scale': self._save_scale}
-                    input_info = {'input_mins': self.input_mins, 'input_maxes': self.input_maxes,\
-                        'input_maxes_abs': self.input_maxes_abs}
+                    from .auto_tune import AlphaTuner  # Call
+
+                    layers_info = {"absorb_to_layer": self.absorb_to_layer}
+                    sq_info = {
+                        "op_types": op_types,
+                        "record_max_info": self.record_max_info,
+                        "insert_mul": self.insert_mul,
+                        "allow_absorb": self.allow_absorb,
+                        "weight_clip": self.weight_clip,
+                        "_save_scale": self._save_scale,
+                    }
+                    input_info = {
+                        "input_mins": self.input_mins,
+                        "input_maxes": self.input_maxes,
+                        "input_maxes_abs": self.input_maxes_abs,
+                    }
                     if self.do_blockwise:
-                        block_info = {'block_names': {self.block_names}, 'block_to_module': self.block_to_module}
-                        self.alpha_per_layer = AlphaTuner._auto_tune_alpha_blockwise(\
-                            model=self.model, dataloader=self.dataloader, input_info=input_info,
-                            auto_alpha_args=auto_alpha_args, layers_info=layers_info, device=self.device,
-                            sq_info=sq_info, block_info=block_info)
+                        block_info = {"block_names": {self.block_names}, "block_to_module": self.block_to_module}
+                        self.alpha_per_layer = AlphaTuner._auto_tune_alpha_blockwise(
+                            model=self.model,
+                            dataloader=self.dataloader,
+                            input_info=input_info,
+                            auto_alpha_args=auto_alpha_args,
+                            layers_info=layers_info,
+                            device=self.device,
+                            sq_info=sq_info,
+                            block_info=block_info,
+                        )
                     else:
-                        self.alpha_per_layer = AlphaTuner._auto_tune_alpha(\
-                            model=self.model, dataloader=self.dataloader, input_info=input_info,
-                            auto_alpha_args=auto_alpha_args, layers_info=layers_info, device=self.device,
-                            sq_info=sq_info)
+                        self.alpha_per_layer = AlphaTuner._auto_tune_alpha(
+                            model=self.model,
+                            dataloader=self.dataloader,
+                            input_info=input_info,
+                            auto_alpha_args=auto_alpha_args,
+                            layers_info=layers_info,
+                            device=self.device,
+                            sq_info=sq_info,
+                        )
 
             if alpha == "auto":
                 alpha = self.alpha_per_layer

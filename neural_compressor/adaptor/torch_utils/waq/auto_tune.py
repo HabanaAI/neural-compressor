@@ -34,35 +34,33 @@ except:
 
 import numpy
 from tqdm import tqdm
+
 from .utils import *
 
 
 class AlphaTuner:
-    def __init__(self, model, dataloader, input_info, auto_alpha_args,
-        layers_info, device, sq_info, block_info):
-        """
-        Initialize the AlphaTuner with necessary parameters and components.
-        """
+    def __init__(self, model, dataloader, input_info, auto_alpha_args, layers_info, device, sq_info, block_info):
+        """Initialize the AlphaTuner with necessary parameters and components."""
         self.model = model
         self.dataloader = dataloader
-        self.input_maxes = input_info['input_maxes']
-        self.input_mins = input_info['input_mins']
-        self.input_maxes_abs = input_info['input_maxes_abs']
-        self.calib_sample_num = auto_alpha_args['calib_sample_num']
-        self.alpha_min = auto_alpha_args['alpha_min']
-        self.alpha_max = auto_alpha_args['alpha_max']
-        self.alpha_step = auto_alpha_args['alpha_step']
-        self.shared_criterion = auto_alpha_args['shared_criterion']
-        self.default_alpha = auto_alpha_args['default_alpha']
-        self.op_types = sq_info['op_types']
-        self.absorb_to_layer = layers_info['absorb_to_layer']
+        self.input_maxes = input_info["input_maxes"]
+        self.input_mins = input_info["input_mins"]
+        self.input_maxes_abs = input_info["input_maxes_abs"]
+        self.calib_sample_num = auto_alpha_args["calib_sample_num"]
+        self.alpha_min = auto_alpha_args["alpha_min"]
+        self.alpha_max = auto_alpha_args["alpha_max"]
+        self.alpha_step = auto_alpha_args["alpha_step"]
+        self.shared_criterion = auto_alpha_args["shared_criterion"]
+        self.default_alpha = auto_alpha_args["default_alpha"]
+        self.op_types = sq_info["op_types"]
+        self.absorb_to_layer = layers_info["absorb_to_layer"]
         self.weight_scale_dict = {}
         self.max_value_info = {}  # to record max values for alpha tune
-        self.record_max_info = sq_info['record_max_info']
-        self.insert_mul = sq_info['insert_mul']
-        self.allow_absorb = sq_info['allow_absorb']
-        self.weight_clip = sq_info['weight_clip']
-        self._save_scale = sq_info['_save_scale']
+        self.record_max_info = sq_info["record_max_info"]
+        self.insert_mul = sq_info["insert_mul"]
+        self.allow_absorb = sq_info["allow_absorb"]
+        self.weight_clip = sq_info["weight_clip"]
+        self._save_scale = sq_info["_save_scale"]
         self.device = device
         self.block_info = block_info
 
@@ -461,6 +459,7 @@ class AlphaTuner:
                     fp32_output norm: {fp32_norm}; ratio: {ratio}"
                 )
         import operator
+
         ratio_info = dict(sorted(ratio_info.items(), key=operator.itemgetter(1), reverse=True))
         for key in list(ratio_info.keys()):
             logger.debug(f"sorted opname-ratio: {key}:  {ratio_info[key]}")
@@ -472,12 +471,14 @@ class AlphaTuner:
         return None
 
     def default_tune_setup(self):
-        round_num = max( # Initialize the alpha search space
-            len(str(self.alpha_min).split(".")[1]), 
-            len(str(self.alpha_max).split(".")[1]), 
-            len(str(self.alpha_step).split(".")[1])
+        round_num = max(  # Initialize the alpha search space
+            len(str(self.alpha_min).split(".")[1]),
+            len(str(self.alpha_max).split(".")[1]),
+            len(str(self.alpha_step).split(".")[1]),
         )
-        self.alpha_space = numpy.round(numpy.arange(self.alpha_min, self.alpha_max + self.alpha_step, self.alpha_step), round_num).tolist()
+        self.alpha_space = numpy.round(
+            numpy.arange(self.alpha_min, self.alpha_max + self.alpha_step, self.alpha_step), round_num
+        ).tolist()
         ##wrapper new module
         self._qdq_model_wrapper_for_auto(save_q_input=True)
 
@@ -489,9 +490,7 @@ class AlphaTuner:
         return absorb_input_scales, weight_scales
 
     def _auto_tune_alpha(self):
-        """
-        Perform alpha-tuning to obtain layer-wise optimal alpha values and adjust parameters accordingly.
-        """
+        """Perform alpha-tuning to obtain layer-wise optimal alpha values and adjust parameters accordingly."""
         logger.info("Start alpha tuning")
 
         absorb_input_scales, weight_scales = self.default_tune_setup()
@@ -499,9 +498,11 @@ class AlphaTuner:
         total_cnt, tmp_cnt = 0, 0
         alpha_update_iter, tune_cnt = 0, 4
         # multiply_factor is used to combine samples to calib_sample_num // 4 before summarizing the best alpha
-        multiply_factor = self.calib_sample_num // tune_cnt if self.calib_sample_num >= tune_cnt else self.calib_sample_num
+        multiply_factor = (
+            self.calib_sample_num // tune_cnt if self.calib_sample_num >= tune_cnt else self.calib_sample_num
+        )
         self.fp32_output_val = {}
-        best_alphas = self.default_alpha 
+        best_alphas = self.default_alpha
 
         if not self.dataloader:
             logger.info(f"Auto-tuning failed due to no dataloader, using {best_alphas} instead.")
@@ -517,7 +518,9 @@ class AlphaTuner:
                         layer_names = self.absorb_to_layer[key]
                         for layer_name in layer_names:
                             best_alphas_per_module[layer_name] = best_alphas_per_module[key]
-                loss_tmp = self._get_one_batch_auto_loss(input, self.alpha_space, best_alphas_per_module, self.input_maxes_abs)
+                loss_tmp = self._get_one_batch_auto_loss(
+                    input, self.alpha_space, best_alphas_per_module, self.input_maxes_abs
+                )
                 if loss_alphas == {}:
                     loss_alphas = loss_tmp
                 else:
@@ -551,7 +554,9 @@ class AlphaTuner:
                         for layer_name in layer_names:
                             best_alphas_per_module[layer_name] = best_alphas_per_module[key]
 
-                loss_tmp = self._get_one_batch_auto_loss(input, self.alpha_space, best_alphas_per_module, self.input_maxes_abs)
+                loss_tmp = self._get_one_batch_auto_loss(
+                    input, self.alpha_space, best_alphas_per_module, self.input_maxes_abs
+                )
                 if loss_alphas == {}:
                     loss_alphas = loss_tmp
                 else:
@@ -587,13 +592,11 @@ class AlphaTuner:
         return best_alphas
 
     def _auto_tune_alpha_blockwise(self):
-        """
-        Perform blockwise-alpha-tuning to obtain layer-wise optimal alpha values and adjust parameters accordingly.
-        """
+        """Perform blockwise-alpha-tuning to obtain layer-wise optimal alpha values and adjust parameters accordingly."""
         logger.info("Start block-wise alpha tuning")
 
-        self.block_names = self.block_info['block_names']
-        self.block_to_module = self.block_info['block_to_module']
+        self.block_names = self.block_info["block_names"]
+        self.block_to_module = self.block_info["block_to_module"]
         self.block_inputs, self.block_outputs = {}, {}
 
         absorb_input_scales, weight_scales = self.default_tune_setup()
@@ -601,9 +604,11 @@ class AlphaTuner:
         total_cnt, tmp_cnt = 0, 0
         alpha_update_iter, tune_cnt = 0, 4
         # multiply_factor is used to combine samples to calib_sample_num // 4 before summarizing the best alpha
-        multiply_factor = self.calib_sample_num // tune_cnt if self.calib_sample_num >= tune_cnt else self.calib_sample_num
+        multiply_factor = (
+            self.calib_sample_num // tune_cnt if self.calib_sample_num >= tune_cnt else self.calib_sample_num
+        )
         self.fp32_output_val = {}
-        best_alphas = self.default_alpha 
+        best_alphas = self.default_alpha
 
         if not self.dataloader:
             logger.info(f"Auto-tuning failed due to no dataloader, using {best_alphas} instead.")
@@ -619,7 +624,9 @@ class AlphaTuner:
                         layer_names = self.absorb_to_layer[key]
                         for layer_name in layer_names:
                             best_alphas_per_module[layer_name] = best_alphas_per_module[key]
-                loss_tmp = self._get_one_batch_auto_loss_blockwise(input, self.alpha_space, best_alphas_per_module, self.input_maxes_abs)
+                loss_tmp = self._get_one_batch_auto_loss_blockwise(
+                    input, self.alpha_space, best_alphas_per_module, self.input_maxes_abs
+                )
                 if loss_alphas == {}:
                     for block_name in self.block_names:
                         for key in self.block_to_module[block_name]:
@@ -657,7 +664,9 @@ class AlphaTuner:
                         for layer_name in layer_names:
                             best_alphas_per_module[layer_name] = best_alphas_per_module[key]
 
-                loss_tmp = self._get_one_batch_auto_loss_blockwise(input, self.alpha_space, best_alphas_per_module, self.input_maxes_abs)
+                loss_tmp = self._get_one_batch_auto_loss_blockwise(
+                    input, self.alpha_space, best_alphas_per_module, self.input_maxes_abs
+                )
                 if loss_alphas == {}:
                     for block_name in self.block_names:
                         for key in self.block_to_module[block_name]:
@@ -695,8 +704,3 @@ class AlphaTuner:
         logger.info("block-wise auto tuning done")
 
         return best_alphas
-
-
-
-
-
