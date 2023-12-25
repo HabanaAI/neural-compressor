@@ -100,78 +100,79 @@ class TorchSmoothQuant:
         for _, p in self.model.named_parameters():
             return p.data.device, p.data.dtype
 
-    def _save_input_pc_hook(self, name, percentile=100):
-        """A forward hook to save input max of a module
-        :param name: the module name
-        :return: A hook function."""
-
-        def save_input_hook(module, inputs, outputs):
-            input = inputs[0]
-            ##TODO check input channel is correct
-            if len(module.weight.shape) == 4:  ##conv3d or conv1d not supported now, need better way
-                input = input.permute(0, 2, 3, 1)
-            input = input.reshape(-1, input.shape[-1])
-            max_tensor = torch.max(input, dim=0)[0]
-            min_tensor = torch.min(input, dim=0)[0]
-            k_index = int(input.shape[0] * percentile / 100)
-            res, _ = torch.kthvalue(torch.abs(input), k_index, dim=0)
-            ##res = torch.max(torch.abs(input),dim=0)[0]
-            if name not in self.input_maxes.keys():
-                self.input_mins[name], self.input_maxes[name] = min_tensor, max_tensor
-                self.input_maxes_abs[name] = res
-            else:
-                self.input_mins[name] = torch.min(self.input_mins[name], min_tensor)
-                self.input_maxes[name] = torch.max(self.input_maxes[name], max_tensor)
-                self.input_maxes_abs[name] = torch.max(self.input_maxes_abs[name], res)
-
-        return save_input_hook
-
-    def _add_min_max_observer(self, modules, percentile=100):
-        """
-        :param modules: the modules which the observer will insert to
-        :return:
-        """
-        self.hook_handles = []
-        for key in modules.keys():
-            hook_func = self._save_input_pc_hook(key, percentile)
-            hook_handle = modules[key].register_forward_hook(hook_func)
-            self.hook_handles.append(hook_handle)
-
-    def _remove_observer(self):
-        """Remove the observer from the model
-        :return:"""
-        for hook_handle in self.hook_handles:
-            hook_handle.remove()
-
-    def _calibrate(self, absorb_to_layer, calib_iter, percentile):
-        """
-        :param absorb_to_layer: A dict,key is the absorb layer, val is a list of the to be smoothed layer
-        :param calib_iter: Data size for calibration
-        :return: A dict that saved the layer name and the channel-wise max value info
-        """
-        ##hook all the module
-        hook_modules = {}
-        for n, module in self.model.named_modules():
-            if isinstance(module, tuple(self.op_types)):
-                hook_modules[n] = module
-
-        self._add_min_max_observer(hook_modules, percentile)
-
-        self._dump_min_max(calib_iter=calib_iter)
-        self._remove_observer()
-        return self.input_maxes_abs
-
-    def _dump_min_max(self, calib_iter=100):
-        """Dump min max per channel information, the min max value will be saved in input_maxes attribute
-        :param calibration_method: only support min_max currently
-        :param calib_iter: Sample size for calibration
-        :return:"""
-        logger.info("Calibrating...")
-        if self.q_func:
-            self.q_func(self.model)
-        else:
-            assert self.dataloader, "Please set dataloader for calibration."
-            model_forward(self.model, self.dataloader, calib_iter, self.device)
+    #
+    # def _save_input_pc_hook(self, name, percentile=100):
+    #     """A forward hook to save input max of a module
+    #     :param name: the module name
+    #     :return: A hook function."""
+    #
+    #     def save_input_hook(module, inputs, outputs):
+    #         input = inputs[0]
+    #         ##TODO check input channel is correct
+    #         if len(module.weight.shape) == 4:  ##conv3d or conv1d not supported now, need better way
+    #             input = input.permute(0, 2, 3, 1)
+    #         input = input.reshape(-1, input.shape[-1])
+    #         max_tensor = torch.max(input, dim=0)[0]
+    #         min_tensor = torch.min(input, dim=0)[0]
+    #         k_index = int(input.shape[0] * percentile / 100)
+    #         res, _ = torch.kthvalue(torch.abs(input), k_index, dim=0)
+    #         ##res = torch.max(torch.abs(input),dim=0)[0]
+    #         if name not in self.input_maxes.keys():
+    #             self.input_mins[name], self.input_maxes[name] = min_tensor, max_tensor
+    #             self.input_maxes_abs[name] = res
+    #         else:
+    #             self.input_mins[name] = torch.min(self.input_mins[name], min_tensor)
+    #             self.input_maxes[name] = torch.max(self.input_maxes[name], max_tensor)
+    #             self.input_maxes_abs[name] = torch.max(self.input_maxes_abs[name], res)
+    #
+    #     return save_input_hook
+    #
+    # def _add_min_max_observer(self, modules, percentile=100):
+    #     """
+    #     :param modules: the modules which the observer will insert to
+    #     :return:
+    #     """
+    #     self.hook_handles = []
+    #     for key in modules.keys():
+    #         hook_func = self._save_input_pc_hook(key, percentile)
+    #         hook_handle = modules[key].register_forward_hook(hook_func)
+    #         self.hook_handles.append(hook_handle)
+    #
+    # def _remove_observer(self):
+    #     """Remove the observer from the model
+    #     :return:"""
+    #     for hook_handle in self.hook_handles:
+    #         hook_handle.remove()
+    #
+    # def _calibrate(self, absorb_to_layer, calib_iter, percentile):
+    #     """
+    #     :param absorb_to_layer: A dict,key is the absorb layer, val is a list of the to be smoothed layer
+    #     :param calib_iter: Data size for calibration
+    #     :return: A dict that saved the layer name and the channel-wise max value info
+    #     """
+    #     ##hook all the module
+    #     hook_modules = {}
+    #     for n, module in self.model.named_modules():
+    #         if isinstance(module, tuple(self.op_types)):
+    #             hook_modules[n] = module
+    #
+    #     self._add_min_max_observer(hook_modules, percentile)
+    #
+    #     self._dump_min_max(calib_iter=calib_iter)
+    #     self._remove_observer()
+    #     return self.input_maxes_abs
+    #
+    # def _dump_min_max(self, calib_iter=100):
+    #     """Dump min max per channel information, the min max value will be saved in input_maxes attribute
+    #     :param calibration_method: only support min_max currently
+    #     :param calib_iter: Sample size for calibration
+    #     :return:"""
+    #     logger.info("Calibrating...")
+    #     if self.q_func:
+    #         self.q_func(self.model)
+    #     else:
+    #         assert self.dataloader, "Please set dataloader for calibration."
+    #         model_forward(self.model, self.dataloader, calib_iter, self.device)
 
     def _reshape_in_channel_to_last(self, layer_name):
         """Move the input channel to the last dim
@@ -919,7 +920,6 @@ class TorchSmoothQuant:
         need_calibration = self._check_need_calibration(alpha, percentile, op_types, scales_per_op, calib_iter)
         with torch.no_grad():
             str_op_types = [i.__name__ for i in op_types]
-            input_maxes_abs = self.input_maxes_abs
             if need_calibration:  ##avoid multiple calibaration during tuning if the only difference is alpha
                 if self.insert_mul:
                     self.self_absorb_layers = self._get_all_layer_names(op_types)  # TODO: only support linear now.
@@ -971,8 +971,13 @@ class TorchSmoothQuant:
                     self.block_names = list(self.block_to_module.keys())
                     logger.info(f"Blockwise auto-tuning: {len(self.block_names)} blocks found")
                     logger.debug(f"Blockwise auto-tuning blocks info: {self.block_to_module}")
+                from .calibration import Calibration
 
-                input_maxes_abs = self._calibrate(self.absorb_to_layer, calib_iter, percentile)
+                calib = Calibration(self.model, self.dataloader, self.q_func, self.device)
+                self.input_mins, self.input_maxes = calib.calibrate(calib_iter, percentile, op_types)
+                input_maxes_abs = {}
+                for key in self.input_mins.keys():
+                    input_maxes_abs[key] = torch.max(torch.abs(self.input_mins[key]), torch.abs(self.input_maxes[key]))
 
                 # Check if input_maxes match self.absorb_to_layer
                 # (due to self._get_all_layer_names use layer tree instead of forward_path)

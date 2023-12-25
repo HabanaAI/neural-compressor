@@ -284,7 +284,7 @@ if args.quantize:
         recipes = {"smooth_quant": True, "smooth_quant_args": {"alpha": args.alpha, 'folding': False}}
         print(f'using sq, recipes: {recipes}')
         recipes = {}
-        from neural_compressor.adaptor.torch_utils.smooth_quant.smooth_quant import TorchSmoothQuant
+        from neural_compressor.adaptor.torch_utils.waq import TorchSmoothQuant
 
         print(f'device: {device}')
         sq = TorchSmoothQuant(user_model, calib_dataloader)

@@ -31,10 +31,11 @@ from .utils import *
 
 
 class Calibration:
-    def __init__(self, model, dataloder=None, q_func=None):
+    def __init__(self, model, dataloder=None, q_func=None, device="cpu"):
         self.model = model
         self.dataloader = dataloder
         self.q_func = q_func
+        self.device = device
 
     def _save_input_pc_hook(self, name, percentile=100):
         """A forward hook to save input max of a module
@@ -91,7 +92,7 @@ class Calibration:
             assert self.dataloader, "Please set dataloader for calibration."
             model_forward(self.model, self.dataloader, calib_iter, self.device)
 
-    def _calibrate(
+    def calibrate(
         self, calib_iter, percentile=100, op_types=[torch.nn.Conv2d, torch.nn.Linear]
     ):  ##TODO transformers.conv1d
         """
