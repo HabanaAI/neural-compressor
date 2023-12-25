@@ -139,7 +139,7 @@ def quant_dequant_w(m, num_bits=8, scheme="sym"):
         q_x = torch.round(x / scale + bias)
         q_x.clamp_(q_min, q_max)
         return (q_x - bias) * scale
-    elif isinstance(m, torch.nn.Conv2d):
+    elif isinstance(m, torch.nn.Conv2d):  ##TODO polish code
         x = m.weight
         x = torch.permute(x, (0, 2, 3, 1))
         x = x.reshape(-1, x.shape[-1])

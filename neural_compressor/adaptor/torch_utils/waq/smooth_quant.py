@@ -40,21 +40,23 @@ from .utils import *
 
 
 class TorchSmoothQuant:
-    """Fake input channel quantization, for more details please refer to
-    [1] SmoothQuant: Accurate and Efficient
-    Post-Training Quantization for Large Language Models
-    [2] SPIQ: Data-Free Per-Channel Static Input Quantization
-    Currently, we only handle the layers whose smooth scale could be absorbed, we will support other layers later.
+    """Implements fake input channel quantization.
 
-    We only support inplace mode which means the model weights will be changed, you can call recover function
-    to recover the weights if needed
+    For more details, please refer to:
+    [1] SmoothQuant: Accurate and Efficient Post-Training Quantization for Large Language Models
+    [2] SPIQ: Data-Free Per-Channel Static Input Quantization
+    This implementation only supports inplace mode, meaning the model weights will be changed. You can call the recover function to restore the weights if needed.
     """
 
     def __init__(self, model, dataloader=None, example_inputs=None, q_func=None, traced_model=None):
         """
-        :param model: Torch model :param dataloader: Calibration dataloader :param traced_model: A specific model
-        shares the same architecture as the model and could be traced by torch.jit. If not supplied, we use model
-        instead.
+        :param model: The Torch model
+        :param dataloader: Calibration dataloader
+        :param example_inputs: An example input for the model. If it is None, data from the dataloader will be used.
+        :param traced_model: A specific model that shares the same architecture as the model and could be traced by torch.jit. If not supplied,
+        the model will be used instead.
+        :param q_func: A custom function that processes data for models with special input formats. The function should be in the exact format:
+        def func(model). If it is None, the data in the dataloader will be forwarded with a predefined format
         """
         self.model = model
         if not isinstance(self.model, torch.nn.Module):
@@ -238,7 +240,7 @@ class TorchSmoothQuant:
         :return:"""
         layer = get_module(self.model, layer_name)
         if self.insert_mul:
-            from .model_wrapper import SQLinearWrapper
+            from ..model_wrapper import SQLinearWrapper
 
             layer = get_module(self.model, layer_name)
             if isinstance(layer, SQLinearWrapper):
