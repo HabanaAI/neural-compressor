@@ -12,9 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import copy
-from functools import partial
-
 import torch
 
 from neural_compressor.adaptor.torch_utils.util import (
@@ -25,10 +22,10 @@ from neural_compressor.adaptor.torch_utils.util import (
     get_hidden_states,
     get_module_input_output,
 )
+from neural_compressor.adaptor.torch_utils.waq import set_module
 
 from ...utils import logger
 from .model_wrapper import MulLinear
-from .smooth_quant import model_forward, set_module
 
 
 def _get_absorb_per_block(model, example_inputs, folding=False, weight_config={}):

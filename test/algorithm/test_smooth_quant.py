@@ -13,11 +13,9 @@ sys.path.append("./")
 
 import logging
 
-from transformers import AutoModelForCausalLM, AutoModelForSeq2SeqLM, AutoTokenizer
-
 from neural_compressor import PostTrainingQuantConfig, quantization
 from neural_compressor.adaptor.torch_utils.model_wrapper import SQLinearWrapper
-from neural_compressor.adaptor.torch_utils.smooth_quant import TorchSmoothQuant
+from neural_compressor.adaptor.torch_utils.waq import TorchSmoothQuant
 from neural_compressor.data import Datasets
 from neural_compressor.data.dataloaders.pytorch_dataloader import PyTorchDataLoader
 
@@ -491,7 +489,7 @@ class TestSqListInput(unittest.TestCase):
         input1 = torch.rand((1, 3))
         input2 = torch.rand((1, 3))
         example_input = {"k": [input1, ((input2, input1)), input2]}
-        from neural_compressor.adaptor.torch_utils.smooth_quant import move_input_to_device
+        from neural_compressor.adaptor.torch_utils.waq import move_input_to_device
 
         move_input_to_device(example_input)
 

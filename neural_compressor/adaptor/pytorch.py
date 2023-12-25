@@ -20,7 +20,7 @@ import gc
 import math
 import os
 import re
-from collections import OrderedDict, UserDict, namedtuple
+from collections import OrderedDict, UserDict
 from functools import partial
 
 import yaml
@@ -1780,7 +1780,7 @@ class TemplateAdaptor(Adaptor):
                 assert folding, "IPEX version >= 2.1 is required for SmoothQuant folding=False."
 
         if not hasattr(self, "sq") or force_re_smooth:
-            from .torch_utils.smooth_quant import TorchSmoothQuant
+            from neural_compressor.adaptor.torch_utils.waq import TorchSmoothQuant
 
             self.sq = TorchSmoothQuant(
                 model._model, dataloader=dataloader, example_inputs=self.example_inputs, q_func=self.q_func
@@ -1820,7 +1820,7 @@ class TemplateAdaptor(Adaptor):
         q_model = model._model
         sq_max_info = model.sq_max_info
         if sq_max_info:
-            from .torch_utils.smooth_quant import TorchSmoothQuant
+            from neural_compressor.adaptor.torch_utils.waq import TorchSmoothQuant
 
             tsq = TorchSmoothQuant(q_model, None)
             alpha = tune_cfg["recipe_cfgs"]["smooth_quant_args"]["alpha"]
@@ -1856,8 +1856,9 @@ class TemplateAdaptor(Adaptor):
             model: qdq quantized model.
         """
         q_model = model._model
+        from neural_compressor.adaptor.torch_utils.waq import get_module, set_module
+
         from .torch_utils.model_wrapper import QDQLinear, SQLinearWrapper
-        from .torch_utils.smooth_quant import get_module, set_module
 
         smoothquant_scale_info = {}
         fallback_op_name_list = []
@@ -3297,8 +3298,9 @@ class PyTorch_IPEXAdaptor(TemplateAdaptor):
         sq_max_info = model.sq_max_info
         if sq_max_info:
             smoothquant_scale_info = {}
+            from neural_compressor.adaptor.torch_utils.waq import get_module
+
             from .torch_utils.model_wrapper import SQLinearWrapper
-            from .torch_utils.smooth_quant import get_module
 
             for _, info in sq_max_info.items():
                 alpha = info["alpha"]
@@ -4753,7 +4755,7 @@ class PyTorchWeightOnlyAdaptor(TemplateAdaptor):
 
         supported_layers = ["Linear"]
         if folding:  # pragma: no cover
-            from .torch_utils.smooth_quant import GraphTrace
+            from neural_compressor.adaptor.torch_utils.waq import GraphTrace
 
             tg = GraphTrace()
             absorb_to_layer, _ = tg.get_absorb_to_layer(model, self.example_inputs, supported_layers)

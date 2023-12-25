@@ -66,7 +66,7 @@ class QDQLinear(torch.nn.Module):
 
     def qdq_weight(self):
         # update weight w/ QDQ
-        from .smooth_quant import quant_dequant_w
+        from neural_compressor.adaptor.torch_utils.waq import quant_dequant_w
 
         weith_qdq = quant_dequant_w(self.module)
         self.module.weight = torch.nn.Parameter(weith_qdq)
@@ -181,7 +181,7 @@ def _wrapper_sq_linear(tmp_model, input_scale_dict):
             return X
 
     module_name_list = input_scale_dict.keys()
-    from .smooth_quant import get_module, set_module
+    from neural_compressor.adaptor.torch_utils.waq import get_module, set_module
 
     for name in module_name_list:
         module = get_module(tmp_model, name)
@@ -193,7 +193,7 @@ def _wrapper_sq_linear(tmp_model, input_scale_dict):
 
 def _wrapper_qdq_linear(tmp_model, module_name_list=[]):
     """Help function to generate a fake QDQ model for loading weights."""
-    from .smooth_quant import get_module, set_module
+    from neural_compressor.adaptor.torch_utils.waq import get_module, set_module
 
     for name in module_name_list:
         module = get_module(tmp_model, name)
