@@ -692,8 +692,6 @@ class AlphaTuner:
         return best_alphas
 
 
-
-
 def _reshape_in_channel_to_last(layer_name, model):
     """Move the input channel to the last dim
     :param layer_name: Layer name
@@ -707,6 +705,7 @@ def _reshape_in_channel_to_last(layer_name, model):
         weight = weight.permute(0, 2, 3, 1)
         weight = weight.reshape(-1, weight.shape[-1])
     return weight
+
 
 # def _cal_scales(absorb_to_layer, input_maxes, alpha=0.5, tuning=False, device, model):
 #     """Cal the adjust scales

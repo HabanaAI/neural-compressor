@@ -35,9 +35,9 @@ from collections import UserDict, defaultdict
 import numpy
 from tqdm import tqdm
 
+from .auto_tune import _reshape_in_channel_to_last
 from .graph_trace import GraphTrace
 from .utils import *
-from .auto_tune import _reshape_in_channel_to_last
 
 
 class TorchSmoothQuant:
@@ -567,8 +567,8 @@ class TorchSmoothQuant:
                         "input_maxes": self.input_maxes,
                         "input_maxes_abs": self.input_maxes_abs,
                     }
-                    auto_alpha_args['default_alpha'] = default_alpha
-                    auto_alpha_args['calib_sample_num'] = 32
+                    auto_alpha_args["default_alpha"] = default_alpha
+                    auto_alpha_args["calib_sample_num"] = 32
                     if self.do_blockwise:
                         block_info = {"block_names": {self.block_names}, "block_to_module": self.block_to_module}
                         auto_tuner = AlphaTuner(
@@ -582,8 +582,8 @@ class TorchSmoothQuant:
                             block_info=block_info,
                         )
                         self.alpha_per_layer = auto_tuner._auto_tune_alpha_blockwise()
-                    else: #(self, model, dataloader, input_info, auto_alpha_args, layers_info, device, sq_info, block_info):
-                        auto_tuner= AlphaTuner(
+                    else:  # (self, model, dataloader, input_info, auto_alpha_args, layers_info, device, sq_info, block_info):
+                        auto_tuner = AlphaTuner(
                             model=self.model,
                             dataloader=self.dataloader,
                             input_info=input_info,
