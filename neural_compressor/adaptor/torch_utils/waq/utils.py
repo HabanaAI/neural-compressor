@@ -239,18 +239,18 @@ def set_module(model, key, new_module):
     setattr(module, name_list[-1], new_module)
 
 
-def cal_scale(input_max, weights, alpha, scale_type="orig"):
-    if scale_type == "orig":  # same as the paper
-        weights = torch.cat(weights, dim=0)
-        weight_max = torch.max(torch.abs(weights), dim=0)[0]
-        input_power = torch.pow(input_max, alpha)
-        logger.debug(f"{max(input_max)}, {min(input_max)}")
-        weight_power = torch.pow(weight_max, 1 - alpha)
-        scale = torch.clip(input_power / weight_power, min=1e-5)
-        scale[input_power == 0] = 1.0
-        if input_power.size() == weight_power.size():
-            scale[weight_power == 0] = 0.0  ##FIXME
-        return scale
+def cal_scale(input_max, weights, alpha, weight_max_lb=1e-5):
+    weights = torch.cat(weights, dim=0)
+    weight_max = torch.max(torch.abs(weights), dim=0)[0]
+    weight_max = torch.clip(weight_max, weight_max_lb)
+    input_power = torch.pow(input_max, alpha)
+    logger.debug(f"{max(input_max)}, {min(input_max)}")
+    weight_power = torch.pow(weight_max, 1 - alpha)
+    scale = torch.clip(input_power / weight_power, min=1e-5)
+    scale[input_power == 0] = 1.0
+    if input_power.size() == weight_power.size():
+        scale[weight_power == 0] = 0.0  ##FIXME
+    return scale
 
 
 class WrapperLayer(torch.nn.Module):

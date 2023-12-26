@@ -82,7 +82,7 @@ class TorchSmoothQuant:
         self.max_value_info = {}  # to record max values for alpha tune
         self.self_absorb_layers = {}
         self.absorb_to_layer = {}
-        self.weight_clip = True
+        self.weight_max_lb = 1e-5  ##weight max low bound
         self._save_scale = False
         self.weight_scale_dict = {}
 
@@ -275,8 +275,8 @@ class TorchSmoothQuant:
                 weights.append(weight)
 
             weight_max_per_channel = torch.max(torch.abs(torch.cat(weights, dim=0)), dim=0)[0]
-            if self.weight_clip:
-                weight_max_per_channel = weight_max_per_channel.clamp(min=1e-5)
+
+            weight_max_per_channel = weight_max_per_channel.clamp(min=self.weight_max_lb)
             if self.record_max_info:
                 # the input of layers with same absorb layer is the same.
                 input_minmax = [self.input_mins[layer_names[0]], self.input_maxes[layer_names[0]]]
@@ -286,7 +286,7 @@ class TorchSmoothQuant:
                 self.max_value_info[key]["weight_max"] = weight_max_per_channel
                 self.max_value_info[key]["absorbed_layer"] = layer_names
 
-    def _cal_scales(self, absorb_to_layer, input_maxes, alpha=0.5, tuning=False):
+    def _cal_scales(self, absorb_to_layer, input_maxes, alpha=0.5):
         """Cal the adjust scales
         :param absorb_to_layer: A dict mapping absorb layer to smooth quantized layer
         :param input_maxes: The channel-wise input max info for layers
@@ -311,19 +311,6 @@ class TorchSmoothQuant:
                     weight = _reshape_in_channel_to_last(layer_name, self.model)
                     weights.append(weight)
 
-                weight_max_per_channel = torch.max(torch.abs(torch.cat(weights, dim=0)), dim=0)[0]
-                if self.weight_clip:
-                    weight_max_per_channel = weight_max_per_channel.clamp(min=1e-5)
-                if self.record_max_info and not tuning:
-                    # the input of layers with same absorb layer is the same.
-                    input_minmax = [self.input_mins[layer_names[0]], self.input_maxes[layer_names[0]]]
-                    self.max_value_info[key] = {}
-                    self.max_value_info[key]["alpha"] = alpha_tmp
-                    self.max_value_info[key]["input_minmax"] = input_minmax
-                    self.max_value_info[key]["weight_max"] = weight_max_per_channel
-                    self.max_value_info[key]["absorbed_layer"] = layer_names
-                    continue
-
                 if self._save_scale:
                     if key in self.weight_scale_dict and alpha_tmp in self.weight_scale_dict[key]:
                         scale = self.weight_scale_dict[key][alpha_tmp]
@@ -344,13 +331,13 @@ class TorchSmoothQuant:
                     self.weight_scale_dict[layer_name][alpha_tmp] = scale
         return absorb_scales_info, weight_scales_info
 
-    def _adjust_parameters(self, absorb_to_layer, input_maxes, alpha=0.5, tuning=False):
+    def _adjust_parameters(self, absorb_to_layer, input_maxes, alpha=0.5):
         """Adjust the weights and biases
         :param absorb_to_layer: A dict mapping absorb layer to smooth quantized layer
         :param input_maxes: The channel-wise input max info for layers
         :param alpha: Alpha value to balance the quantization difficulty of activation and weight, a float of a dict
         :return:"""
-        absorb_scales_info, weight_scales_info = self._cal_scales(absorb_to_layer, input_maxes, alpha, tuning)
+        absorb_scales_info, weight_scales_info = self._cal_scales(absorb_to_layer, input_maxes, alpha)
         if not absorb_scales_info or not weight_scales_info:
             return weight_scales_info, absorb_scales_info
         for index, key in enumerate(absorb_to_layer.keys()):
@@ -496,7 +483,6 @@ class TorchSmoothQuant:
             "do_blockwise": False,
             "alpha": 0.5,
         },
-        weight_clip=True,
     ):
         """The main entry of smooth quant
         :param alpha: Alpha value to balance the quantization difficulty of activation and weight, please refer
@@ -528,7 +514,7 @@ class TorchSmoothQuant:
             self.insert_mul, self.allow_absorb = False, True
         else:
             self.insert_mul, self.allow_absorb = True, False
-        self.weight_clip = weight_clip  ##TODO remove it later
+
         self.recover()
 
         need_calibration = self._check_need_calibration(alpha, percentile, op_types, scales_per_op, calib_iter)
