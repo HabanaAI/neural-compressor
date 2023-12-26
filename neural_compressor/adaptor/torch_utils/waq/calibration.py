@@ -37,6 +37,7 @@ class Calibration:
         self.q_func = q_func
         self.device = device
 
+    @torch.no_grad()
     def _save_input_pc_hook(self, name, percentile=100):
         """A forward hook to save input max of a module
         :param name: the module name
@@ -63,6 +64,7 @@ class Calibration:
 
         return save_input_hook
 
+    @torch.no_grad()
     def _add_min_max_observer(self, modules, percentile=100):
         """
         :param modules: the modules which the observer will insert to
@@ -74,12 +76,14 @@ class Calibration:
             hook_handle = modules[key].register_forward_hook(hook_func)
             self.hook_handles.append(hook_handle)
 
+    @torch.no_grad()
     def _remove_observer(self):
         """Remove the observer from the model
         :return:"""
         for hook_handle in self.hook_handles:
             hook_handle.remove()
 
+    @torch.no_grad()
     def _dump_min_max(self, calib_iter=100):
         """Dump min max per channel information, the min max value will be saved in input_maxes attribute
         :param calibration_method: only support min_max currently
@@ -92,6 +96,7 @@ class Calibration:
             assert self.dataloader, "Please set dataloader for calibration."
             model_forward(self.model, self.dataloader, calib_iter, self.device)
 
+    @torch.no_grad()
     def calibrate(
         self, calib_iter, percentile=100, op_types=[torch.nn.Conv2d, torch.nn.Linear]
     ):  ##TODO transformers.conv1d

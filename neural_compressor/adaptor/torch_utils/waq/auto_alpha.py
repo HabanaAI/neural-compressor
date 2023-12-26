@@ -255,7 +255,7 @@ class AlphaTuner:
             return torch.sum((output - output_q) ** 2)
 
     def _get_sq_layer_names(self):
-        """Get the all the hook sq layer
+        """Get all the layers that could be smooth quanted
         :return: All the sq layer names."""
         ##TODO this may not fit for folding=False
         module_names = []

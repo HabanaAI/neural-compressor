@@ -35,7 +35,7 @@ from collections import UserDict, defaultdict
 import numpy
 from tqdm import tqdm
 
-from .auto_tune import _reshape_in_channel_to_last
+from .auto_alpha import _reshape_in_channel_to_last
 from .graph_trace import GraphTrace
 from .utils import *
 
@@ -82,14 +82,9 @@ class TorchSmoothQuant:
         self.max_value_info = {}  # to record max values for alpha tune
         self.self_absorb_layers = {}
         self.absorb_to_layer = {}
-        self.adjust_alpha_space = False
         self.weight_clip = True
-        self.default_alpha = 0.5
-
         self._save_scale = False
         self.weight_scale_dict = {}
-
-        self.do_blockwise = False
 
     def _get_device(self):
         """Get the model device
@@ -188,7 +183,7 @@ class TorchSmoothQuant:
         :return:"""
         layer = get_module(self.model, layer_name)
         if self.insert_mul:
-            from .model_wrapper import SQLinearWrapper
+            from ..model_wrapper import SQLinearWrapper
 
             layer = get_module(self.model, layer_name)
             if isinstance(layer, SQLinearWrapper):
@@ -265,6 +260,31 @@ class TorchSmoothQuant:
                 layer.weight *= scale
             if hasattr(layer, "bias") and layer.bias is not None:
                 layer.bias *= scale
+
+    def _export_sq_info(self, absorb_to_layer, input_maxes, alpha=0.5):
+        absorb_to_input_maxes = {}
+        for key in absorb_to_layer.keys():
+            layer_name = absorb_to_layer[key][0]
+            absorb_to_input_maxes[key] = input_maxes[layer_name]
+        for index, key in enumerate(absorb_to_layer.keys()):
+            alpha_tmp = alpha[key] if isinstance(alpha, dict) else alpha
+            layer_names = absorb_to_layer[key]
+            weights = []
+            for layer_name in layer_names:
+                weight = _reshape_in_channel_to_last(layer_name, self.model)
+                weights.append(weight)
+
+            weight_max_per_channel = torch.max(torch.abs(torch.cat(weights, dim=0)), dim=0)[0]
+            if self.weight_clip:
+                weight_max_per_channel = weight_max_per_channel.clamp(min=1e-5)
+            if self.record_max_info:
+                # the input of layers with same absorb layer is the same.
+                input_minmax = [self.input_mins[layer_names[0]], self.input_maxes[layer_names[0]]]
+                self.max_value_info[key] = {}
+                self.max_value_info[key]["alpha"] = alpha_tmp
+                self.max_value_info[key]["input_minmax"] = input_minmax
+                self.max_value_info[key]["weight_max"] = weight_max_per_channel
+                self.max_value_info[key]["absorbed_layer"] = layer_names
 
     def _cal_scales(self, absorb_to_layer, input_maxes, alpha=0.5, tuning=False):
         """Cal the adjust scales
@@ -414,6 +434,53 @@ class TorchSmoothQuant:
             module_names += self.absorb_to_layer[key]
         return module_names
 
+    def _parse_absorb_to_layers(self, op_types, folding):
+        with torch.no_grad():
+            str_op_types = [i.__name__ for i in op_types]
+            input_maxes_abs = self.input_maxes_abs
+
+            if self.insert_mul:
+                self.self_absorb_layers = self._get_all_layer_names(op_types)  # TODO: only support linear now.
+                # fetch modules with the same input
+                group_modules = self._trace(str_op_types, skip_unsupported_layers=False)
+                if group_modules is not None:
+                    # use one input for qkv
+                    for k, v in group_modules.items():
+                        for i in v:
+                            if i in self.self_absorb_layers:
+                                self.self_absorb_layers.pop(i)
+                        self.self_absorb_layers[v[0]] = v
+                    logger.debug(f"self_absorb_layers:{self.self_absorb_layers}")
+            if self.allow_absorb:
+                self.absorb_to_layer, no_absorb_layers = self._trace(
+                    str_op_types
+                )  ##TODO we need to insert mul layer for no_absorb_layers later
+                if self.absorb_to_layer is None and no_absorb_layers is None:
+                    return self.model
+
+            # remove self.self_absorb_layers if it exists in self.absorb_to_layer
+            for k, v in self.absorb_to_layer.items():
+                for i in v:
+                    if i in self.self_absorb_layers:
+                        self.self_absorb_layers.pop(i)
+            self.absorb_to_layer.update(self.self_absorb_layers)
+
+            if self.absorb_to_layer is None and no_absorb_layers is None:
+                logger.warning(
+                    "sorry, could not trace the model, smooth quant is ignored."
+                    "If you are using huggingface model,"
+                    "you could set torchscript to True "
+                )
+                return self.model
+
+            # Check if input_maxes match self.absorb_to_layer
+            # (due to self._get_all_layer_names use layer tree instead of forward_path)
+            if not folding:
+                diff_modules = set(self.absorb_to_layer.keys()).difference(input_maxes_abs.keys())
+                for d in diff_modules:
+                    del self.absorb_to_layer[d]
+
+    @torch.no_grad()
     def transform(
         self,
         alpha=0.5,
@@ -428,9 +495,9 @@ class TorchSmoothQuant:
             "alpha_step": 0.1,
             "shared_criterion": "mean",
             "do_blockwise": False,
+            "alpha": 0.5,
         },
         weight_clip=True,
-        default_alpha=0.5,
     ):
         """The main entry of smooth quant
         :param alpha: Alpha value to balance the quantization difficulty of activation and weight, please refer
@@ -443,189 +510,146 @@ class TorchSmoothQuant:
         :param weight_clip: Whether to clip weight_max when calculating scales.
 
         :param auto_alpha_args: Hyperparameters used to set the alpha search space in SQ auto-tuning.
-            By default the search space is 0.0-1.0 with step_size 0.1.
+            By default, the search space is 0.0-1.0 with step_size 0.1.
             do_blockwise: Whether to do blockwise auto-tuning.
         :param default_alpha: A hyperparameter that is used in SQ auto-tuning; by default it is 0.5.
         :return: A FP32 model with the same architecture as the orig model but with different weight which will be
         benefit to quantization.
         """
-        if isinstance(auto_alpha_args, dict):
-            self.do_blockwise = auto_alpha_args.get("do_blockwise", False)
-        else:
-            self.do_blockwise = False
-        if self.do_blockwise:
-            self.block_names = self.get_blocks()
-            logger.info("Blockwise auto-tuning will be performed")
+
         if not isinstance(self.model, torch.nn.Module):
-            logger.warning("smooth quant is ignored since the model is not a torch module")
+            logger.warning("smoothquant is ignored since the model is not a torch module")
             return self.model
+
+        if isinstance(alpha, float) and (alpha < 0):
+            logger.warning("reset alpha to >=0")
+            alpha = numpy.clip(alpha, 0.0)
 
         if folding:
             self.insert_mul, self.allow_absorb = False, True
         else:
             self.insert_mul, self.allow_absorb = True, False
-        if isinstance(alpha, float) and (alpha < 0 or alpha > 1):
-            logger.warning("reset alpha to in range [0.0, 1.0]")
-
-            alpha = numpy.clip(alpha, 0.0, 1.0)
-
-        self.weight_clip = weight_clip
-        self.default_alpha = default_alpha
-        self.auto_alpha_args = auto_alpha_args
+        self.weight_clip = weight_clip  ##TODO remove it later
         self.recover()
+
         need_calibration = self._check_need_calibration(alpha, percentile, op_types, scales_per_op, calib_iter)
-        with torch.no_grad():
-            str_op_types = [i.__name__ for i in op_types]
-            input_maxes_abs = self.input_maxes_abs
-            if need_calibration:  ##avoid multiple calibaration during tuning if the only difference is alpha
-                if self.insert_mul:
-                    self.self_absorb_layers = self._get_all_layer_names(op_types)  # TODO: only support linear now.
-                    # fetch modules with the same input
-                    group_modules = self._trace(str_op_types, skip_unsupported_layers=False)
-                    if group_modules is not None:
-                        # use one input for qkv
-                        for k, v in group_modules.items():
-                            for i in v:
-                                if i in self.self_absorb_layers:
-                                    self.self_absorb_layers.pop(i)
-                            self.self_absorb_layers[v[0]] = v
-                        logger.debug(f"self_absorb_layers:{self.self_absorb_layers}")
-                if self.allow_absorb:
-                    self.absorb_to_layer, no_absorb_layers = self._trace(
-                        str_op_types
-                    )  ##TODO we need to insert mul layer for no_absorb_layers later
-                    if self.absorb_to_layer is None and no_absorb_layers is None:
-                        return self.model
+        if need_calibration:
+            input_maxes_abs = self._calibrate(self.absorb_to_layer, calib_iter, percentile)
 
-                # remove self.self_absorb_layers if it exists in self.absorb_to_layer
-                for k, v in self.absorb_to_layer.items():
-                    for i in v:
-                        if i in self.self_absorb_layers:
-                            self.self_absorb_layers.pop(i)
-                self.absorb_to_layer.update(self.self_absorb_layers)
-
-                if self.absorb_to_layer is None and no_absorb_layers is None:
-                    logger.warning(
-                        "sorry, could not trace the model, smooth quant is ignored."
-                        "If you are using huggingface model,"
-                        "you could set torchscript to True "
-                    )
-                    return self.model
-
-                if self.do_blockwise:
-                    module_names = self._get_sq_layer_names()
-                    block_names, self.block_to_module = self.block_names, {}
-                    for block in block_names:
-                        self.block_to_module[block] = []
-                    for module in module_names:
-                        checked = False
-                        for block in block_names:
-                            if block + "." in module:
-                                self.block_to_module[block].append(module)
-                                checked = True
-                        if not checked:
-                            self.block_to_module[module] = [module]
-                    self.block_names = list(self.block_to_module.keys())
-                    logger.info(f"Blockwise auto-tuning: {len(self.block_names)} blocks found")
-                    logger.debug(f"Blockwise auto-tuning blocks info: {self.block_to_module}")
-
-                input_maxes_abs = self._calibrate(self.absorb_to_layer, calib_iter, percentile)
-
-                # Check if input_maxes match self.absorb_to_layer
-                # (due to self._get_all_layer_names use layer tree instead of forward_path)
-                if not folding:
-                    diff_modules = set(self.absorb_to_layer.keys()).difference(input_maxes_abs.keys())
-                    for d in diff_modules:
-                        del self.absorb_to_layer[d]
-
-                scale_memo_use = 0
-                for key in self.absorb_to_layer:
-                    layer_name = self.absorb_to_layer[key][0]
-                    input_max = input_maxes_abs[layer_name]
-                    scale_memo_use += 4 * input_max.shape[0] * len(self.absorb_to_layer[key])
-                if alpha == "auto":
-                    alpha_space = (auto_alpha_args["alpha_max"] - auto_alpha_args["alpha_min"]) / auto_alpha_args[
-                        "alpha_step"
-                    ] + 1
-                    scale_memo_use *= alpha_space
-                self._save_scale = enough_memo_store_scale(self.device, scale_memo_use)
-
-                if alpha == "auto":
-                    from .auto_tune import AlphaTuner  # Call
-
-                    layers_info = {"absorb_to_layer": self.absorb_to_layer}
-                    sq_info = {
-                        "op_types": op_types,
-                        "record_max_info": self.record_max_info,
-                        "insert_mul": self.insert_mul,
-                        "allow_absorb": self.allow_absorb,
-                        "weight_clip": self.weight_clip,
-                        "_save_scale": self._save_scale,
-                    }
-                    input_info = {
-                        "input_mins": self.input_mins,
-                        "input_maxes": self.input_maxes,
-                        "input_maxes_abs": self.input_maxes_abs,
-                    }
-                    auto_alpha_args["default_alpha"] = default_alpha
-                    auto_alpha_args["calib_sample_num"] = 32
-                    if self.do_blockwise:
-                        block_info = {"block_names": {self.block_names}, "block_to_module": self.block_to_module}
-                        auto_tuner = AlphaTuner(
-                            model=self.model,
-                            dataloader=self.dataloader,
-                            input_info=input_info,
-                            auto_alpha_args=auto_alpha_args,
-                            layers_info=layers_info,
-                            device=self.device,
-                            sq_info=sq_info,
-                            block_info=block_info,
-                        )
-                        self.alpha_per_layer = auto_tuner._auto_tune_alpha_blockwise()
-                    else:  # (self, model, dataloader, input_info, auto_alpha_args, layers_info, device, sq_info, block_info):
-                        auto_tuner = AlphaTuner(
-                            model=self.model,
-                            dataloader=self.dataloader,
-                            input_info=input_info,
-                            auto_alpha_args=auto_alpha_args,
-                            layers_info=layers_info,
-                            device=self.device,
-                            sq_info=sq_info,
-                        )
-                        self.alpha_per_layer = auto_tuner._auto_tune_alpha()
-
+        if alpha == "auto":
+            self.auto_alpha_args = auto_alpha_args
+            scale_memo_use = 0
+            for key in self.absorb_to_layer:
+                layer_name = self.absorb_to_layer[key][0]
+                input_max = input_maxes_abs[layer_name]
+                scale_memo_use += 4 * input_max.shape[0] * len(self.absorb_to_layer[key])
             if alpha == "auto":
-                alpha = self.alpha_per_layer
-            example_inputs = self._get_example_input()
-            if example_inputs is not None:
-                out_pre_sq = model_forward_per_sample(self.model, example_inputs, self.device)
+                alpha_space = (auto_alpha_args["alpha_max"] - auto_alpha_args["alpha_min"]) / auto_alpha_args[
+                    "alpha_step"
+                ] + 1
+                scale_memo_use *= alpha_space
+            self._save_scale = enough_memo_store_scale(self.device, scale_memo_use)
 
-            if folding:
-                self._save_scale = False
-            if self.record_max_info:
-                # max_info is recorded in self.max_value_info
-                self._adjust_parameters(self.absorb_to_layer, input_maxes_abs, alpha)
-                self.model._smoothquant_optimized = False
-                return self.model
-
-            self.weight_scale_info, self.absorb_scales_info = self._adjust_parameters(
-                self.absorb_to_layer, input_maxes_abs, alpha
-            )
-
-            self.model._smoothquant_optimized = True
-            if example_inputs is not None:
-                # Check mathematical equivelancy
-                out_post_sq = model_forward_per_sample(self.model, example_inputs, self.device)
-
-                if not self.output_is_equal(out_post_sq, out_pre_sq):
-                    logger.warning(
-                        "Mathematical equivelancy of Smoothquant is not preserved. "
-                        "Please kindly report this issue to https://github.com/intel/neural-compressor."
-                    )
+            if isinstance(auto_alpha_args, dict):
+                self.do_blockwise = auto_alpha_args.get("do_blockwise", False)
             else:
-                logger.warning(" Could not get example input, equivelancy check is skipped")
+                self.do_blockwise = False
+            if self.do_blockwise:
+                self.block_names = self.get_blocks()
+                logger.info("Blockwise auto-tuning will be performed")
 
+            if self.do_blockwise:
+                module_names = self._get_sq_layer_names()
+                block_names, self.block_to_module = self.block_names, {}
+                for block in block_names:
+                    self.block_to_module[block] = []
+                for module in module_names:
+                    checked = False
+                    for block in block_names:
+                        if block + "." in module:
+                            self.block_to_module[block].append(module)
+                            checked = True
+                    if not checked:
+                        self.block_to_module[module] = [module]
+                self.block_names = list(self.block_to_module.keys())
+                logger.info(f"Blockwise auto-tuning: {len(self.block_names)} blocks found")
+                logger.debug(f"Blockwise auto-tuning blocks info: {self.block_to_module}")
+            from .auto_alpha import AlphaTuner  # Call
+
+            layers_info = {"absorb_to_layer": self.absorb_to_layer}
+            sq_info = {
+                "op_types": op_types,
+                "record_max_info": self.record_max_info,
+                "insert_mul": self.insert_mul,
+                "allow_absorb": self.allow_absorb,
+                "weight_clip": self.weight_clip,
+                "_save_scale": self._save_scale,
+            }
+            input_info = {
+                "input_mins": self.input_mins,
+                "input_maxes": self.input_maxes,
+                "input_maxes_abs": self.input_maxes_abs,
+            }
+            auto_alpha_args["default_alpha"] = auto_alpha_args.get("alpha", 0.5)
+            auto_alpha_args["calib_sample_num"] = 32
+            if self.do_blockwise:
+                block_info = {"block_names": {self.block_names}, "block_to_module": self.block_to_module}
+                auto_tuner = AlphaTuner(
+                    model=self.model,
+                    dataloader=self.dataloader,
+                    input_info=input_info,
+                    auto_alpha_args=auto_alpha_args,
+                    layers_info=layers_info,
+                    device=self.device,
+                    sq_info=sq_info,
+                    block_info=block_info,
+                )
+                self.alpha_per_layer = auto_tuner._auto_tune_alpha_blockwise()
+            else:  # (self, model, dataloader, input_info, auto_alpha_args, layers_info, device, sq_info, block_info):
+                auto_tuner = AlphaTuner(
+                    model=self.model,
+                    dataloader=self.dataloader,
+                    input_info=input_info,
+                    auto_alpha_args=auto_alpha_args,
+                    layers_info=layers_info,
+                    device=self.device,
+                    sq_info=sq_info,
+                )
+                self.alpha_per_layer = auto_tuner._auto_tune_alpha()
+
+        if alpha == "auto":
+            alpha = self.alpha_per_layer
+        example_inputs = self._get_example_input()
+        if example_inputs is not None:
+            out_pre_sq = model_forward_per_sample(self.model, example_inputs, self.device)
+
+        if folding:
+            self._save_scale = False
+
+        if self.record_max_info:
+            self._export_sq_info(self.absorb_to_layer, input_maxes_abs, alpha)
+            # # max_info is recorded in self.max_value_info
+            # self._adjust_parameters(self.absorb_to_layer, input_maxes_abs, alpha)
+            self.model._smoothquant_optimized = False
             return self.model
+
+        self.weight_scale_info, self.absorb_scales_info = self._adjust_parameters(
+            self.absorb_to_layer, input_maxes_abs, alpha
+        )
+        self.model._smoothquant_optimized = True
+
+        if example_inputs is not None:
+            # Check mathematical equivelancy
+            out_post_sq = model_forward_per_sample(self.model, example_inputs, self.device)
+            if not self.output_is_equal(out_post_sq, out_pre_sq):
+                logger.warning(
+                    "Mathematical equivelancy of Smoothquant is not preserved. "
+                    "Please kindly report this issue to https://github.com/intel/neural-compressor."
+                )
+        else:
+            logger.warning(" Could not get example input, equivelancy check is skipped")
+
+        return self.model
 
     def output_is_equal(self, out1, out2, atol=1e-04):
         try:
