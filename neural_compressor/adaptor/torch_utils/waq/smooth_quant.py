@@ -193,7 +193,7 @@ class TorchSmoothQuant:
                 new_module = SQLinearWrapper(layer, 1.0 / scale, input_minmax, alpha)
                 set_module(self.model, layer_name, new_module)
         elif self.allow_absorb:
-            scale = self._reshape_scale_for_weight(layer, scale)
+            scale = reshape_scale_as_weight(layer, scale)
             layer.weight = torch.nn.Parameter(layer.weight * scale)
         return scale
 
@@ -434,51 +434,50 @@ class TorchSmoothQuant:
             module_names += self.absorb_to_layer[key]
         return module_names
 
+    @torch.no_grad()
     def _parse_absorb_to_layers(self, op_types, folding):
-        with torch.no_grad():
-            str_op_types = [i.__name__ for i in op_types]
-            input_maxes_abs = self.input_maxes_abs
+        str_op_types = [i.__name__ for i in op_types]
+        input_maxes_abs = self.input_maxes_abs
 
-            if self.insert_mul:
-                self.self_absorb_layers = self._get_all_layer_names(op_types)  # TODO: only support linear now.
-                # fetch modules with the same input
-                group_modules = self._trace(str_op_types, skip_unsupported_layers=False)
-                if group_modules is not None:
-                    # use one input for qkv
-                    for k, v in group_modules.items():
-                        for i in v:
-                            if i in self.self_absorb_layers:
-                                self.self_absorb_layers.pop(i)
-                        self.self_absorb_layers[v[0]] = v
-                    logger.debug(f"self_absorb_layers:{self.self_absorb_layers}")
-            if self.allow_absorb:
-                self.absorb_to_layer, no_absorb_layers = self._trace(
-                    str_op_types
-                )  ##TODO we need to insert mul layer for no_absorb_layers later
-                if self.absorb_to_layer is None and no_absorb_layers is None:
-                    return self.model
-
-            # remove self.self_absorb_layers if it exists in self.absorb_to_layer
-            for k, v in self.absorb_to_layer.items():
-                for i in v:
-                    if i in self.self_absorb_layers:
-                        self.self_absorb_layers.pop(i)
-            self.absorb_to_layer.update(self.self_absorb_layers)
-
+        if self.insert_mul:
+            self.self_absorb_layers = self._get_all_layer_names(op_types)  # TODO: only support linear now.
+            # fetch modules with the same input
+            group_modules = self._trace(str_op_types, skip_unsupported_layers=False)
+            if group_modules is not None:
+                # use one input for qkv
+                for k, v in group_modules.items():
+                    for i in v:
+                        if i in self.self_absorb_layers:
+                            self.self_absorb_layers.pop(i)
+                    self.self_absorb_layers[v[0]] = v
+                logger.debug(f"self_absorb_layers:{self.self_absorb_layers}")
+        if self.allow_absorb:
+            self.absorb_to_layer, no_absorb_layers = self._trace(str_op_types)
             if self.absorb_to_layer is None and no_absorb_layers is None:
-                logger.warning(
-                    "sorry, could not trace the model, smooth quant is ignored."
-                    "If you are using huggingface model,"
-                    "you could set torchscript to True "
-                )
-                return self.model
+                return None
 
-            # Check if input_maxes match self.absorb_to_layer
-            # (due to self._get_all_layer_names use layer tree instead of forward_path)
-            if not folding:
-                diff_modules = set(self.absorb_to_layer.keys()).difference(input_maxes_abs.keys())
-                for d in diff_modules:
-                    del self.absorb_to_layer[d]
+        # remove self.self_absorb_layers if it exists in self.absorb_to_layer
+        for k, v in self.absorb_to_layer.items():
+            for i in v:
+                if i in self.self_absorb_layers:
+                    self.self_absorb_layers.pop(i)
+        self.absorb_to_layer.update(self.self_absorb_layers)
+
+        if self.absorb_to_layer is None and no_absorb_layers is None:
+            logger.warning(
+                "sorry, could not trace the model, smooth quant is ignored."
+                "If you are using huggingface model,"
+                "you could set torchscript to True "
+            )
+            return None
+
+        # Check if input_maxes match self.absorb_to_layer
+        # (due to self._get_all_layer_names use layer tree instead of forward_path)
+        if not folding:
+            diff_modules = set(self.absorb_to_layer.keys()).difference(input_maxes_abs.keys())
+            for d in diff_modules:
+                del self.absorb_to_layer[d]
+        return self.absorb_to_layer
 
     @torch.no_grad()
     def transform(
@@ -535,6 +534,10 @@ class TorchSmoothQuant:
         need_calibration = self._check_need_calibration(alpha, percentile, op_types, scales_per_op, calib_iter)
         if need_calibration:
             input_maxes_abs = self._calibrate(self.absorb_to_layer, calib_iter, percentile)
+        self.absorb_to_layer = self._parse_absorb_to_layers(op_types, folding)
+        if self.absorb_to_layer is None:
+            logger.warning("empty absorb_to_layer, smoothquant is ignored ")
+            return self.model
 
         if alpha == "auto":
             self.auto_alpha_args = auto_alpha_args
@@ -604,7 +607,7 @@ class TorchSmoothQuant:
                     sq_info=sq_info,
                     block_info=block_info,
                 )
-                self.alpha_per_layer = auto_tuner._auto_tune_alpha_blockwise()
+                alpha = auto_tuner._auto_tune_alpha_blockwise()
             else:  # (self, model, dataloader, input_info, auto_alpha_args, layers_info, device, sq_info, block_info):
                 auto_tuner = AlphaTuner(
                     model=self.model,
@@ -615,10 +618,8 @@ class TorchSmoothQuant:
                     device=self.device,
                     sq_info=sq_info,
                 )
-                self.alpha_per_layer = auto_tuner._auto_tune_alpha()
+                alpha = auto_tuner._auto_tune_alpha()
 
-        if alpha == "auto":
-            alpha = self.alpha_per_layer
         example_inputs = self._get_example_input()
         if example_inputs is not None:
             out_pre_sq = model_forward_per_sample(self.model, example_inputs, self.device)

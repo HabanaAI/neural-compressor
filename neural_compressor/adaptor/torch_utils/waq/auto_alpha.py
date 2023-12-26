@@ -86,41 +86,6 @@ class AlphaTuner:
 
         return save_blockwise_hook
 
-    def _reshape_scale_for_input(self, layer, scale):
-        """Reshape the scale for input feature in channel
-        :param layer:
-
-        :param scale:
-        :return:
-        """
-        if hasattr(layer, "orig_layer"):
-            layer = layer.orig_layer
-        if isinstance(layer, torch.nn.Conv2d):
-            scale = scale.view(1, scale.shape[0], 1, 1)
-
-        elif isinstance(layer, torch.nn.Linear):
-            scale = scale.view(1, scale.shape[0])
-
-        return scale
-
-    def _reshape_scale_for_weight(self, layer, scale):
-        """Reshape the scale for weight input channel, depthwise output channel
-        :param layer:  torch module
-        :param scale: orig scale
-        :return: reshaped scale."""
-        if hasattr(layer, "orig_layer"):
-            layer = layer.orig_layer
-        if isinstance(layer, torch.nn.Conv2d) and layer.groups > 1:  ##only depthwise conv could hit here
-            scale = scale.view(scale.shape[0], 1, 1, 1)  ##mount on output channel
-
-        elif isinstance(layer, torch.nn.Conv2d):
-            scale = scale.view(1, scale.shape[0], 1, 1)
-
-        elif isinstance(layer, torch.nn.Linear):
-            scale = scale.view(1, scale.shape[0])
-
-        return scale
-
     def _get_all_hook_module_names(self):
         module_names = []
         for n, module in self.model.named_modules():

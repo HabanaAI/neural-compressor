@@ -316,3 +316,40 @@ class WrapperLayer(torch.nn.Module):
             output = self.orig_layer(x)
         self.output = output
         return output
+
+
+def reshape_scale_as_input(layer, scale):
+    """Reshape the scale for input feature in channel
+    :param layer:
+
+    :param scale:
+    :return:
+    """
+    if hasattr(layer, "orig_layer"):
+        layer = layer.orig_layer
+    if isinstance(layer, torch.nn.Conv2d):
+        scale = scale.view(1, scale.shape[0], 1, 1)
+
+    elif isinstance(layer, torch.nn.Linear):
+        scale = scale.view(1, scale.shape[0])
+
+    return scale
+
+
+def reshape_scale_as_weight(layer, scale):
+    """Reshape the scale for weight input channel, depthwise output channel
+    :param layer:  torch module
+    :param scale: orig scale
+    :return: reshaped scale."""
+    if hasattr(layer, "orig_layer"):
+        layer = layer.orig_layer
+    if isinstance(layer, torch.nn.Conv2d) and layer.groups > 1:  ##only depthwise conv could hit here
+        scale = scale.view(scale.shape[0], 1, 1, 1)  ##mount on output channel
+
+    elif isinstance(layer, torch.nn.Conv2d):
+        scale = scale.view(1, scale.shape[0], 1, 1)
+
+    elif isinstance(layer, torch.nn.Linear):
+        scale = scale.view(1, scale.shape[0])
+
+    return scale

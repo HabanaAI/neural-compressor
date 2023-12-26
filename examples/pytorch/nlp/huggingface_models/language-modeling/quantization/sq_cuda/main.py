@@ -288,11 +288,11 @@ if args.quantize:
 
         print(f'device: {device}')
         sq = TorchSmoothQuant(user_model, calib_dataloader)
-        sq.record_max_info = True
+        # sq.record_max_info = True
 
         # smooth quant
         print('start smoothquant ...')
-        sq_model = sq.transform(alpha=args.alpha, folding=False,
+        sq_model = sq.transform(alpha=args.alpha, folding=True,
                                 auto_alpha_args={"alpha_min": 0.0, "alpha_max": 1.0, "alpha_step": 0.1,
                                                  "shared_criterion": "mean"})
         model_sq_max_info = sq.max_value_info
