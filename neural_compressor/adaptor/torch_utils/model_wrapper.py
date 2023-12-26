@@ -139,7 +139,7 @@ class SQLinearWrapper(torch.nn.Module):
         min_val_neg = torch.min(min_val, torch.zeros_like(min_val))
         max_val_pos = torch.max(max_val, torch.zeros_like(max_val))
         scale = (max_val_pos - min_val_neg) / float(quant_max - quant_min)
-        scale = torch.max(scale, torch.tensor([torch.finfo(torch.float32).eps]))
+        scale = torch.max(scale, torch.tensor([torch.finfo(torch.float32).eps], device=scale.device))
         zero_point = quant_min - torch.round(min_val_neg / scale).to(torch.int)
         zero_point = torch.clamp(zero_point, quant_min, quant_max)
         return scale, zero_point

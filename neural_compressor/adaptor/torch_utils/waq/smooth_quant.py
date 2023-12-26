@@ -36,6 +36,7 @@ import numpy
 from tqdm import tqdm
 
 from .auto_alpha import _reshape_in_channel_to_last
+from .calibration import Calibration
 from .graph_trace import GraphTrace
 from .utils import *
 
@@ -80,7 +81,6 @@ class TorchSmoothQuant:
         self.allow_absorb = True
         self.record_max_info = False
         self.max_value_info = {}  # to record max values for alpha tune
-        self.self_absorb_layers = {}
         self.absorb_to_layer = {}
         self.weight_max_lb = 1e-5  ##weight max low bound
         self._save_scale = False
@@ -91,88 +91,6 @@ class TorchSmoothQuant:
         :return:Model device."""
         for _, p in self.model.named_parameters():
             return p.data.device, p.data.dtype
-
-    def _save_input_pc_hook(self, name, percentile=100):
-        """A forward hook to save input max of a module
-        :param name: the module name
-        :return: A hook function."""
-
-        def save_input_hook(module, inputs, outputs):
-            input = inputs[0]
-            ##TODO check input channel is correct
-            if len(module.weight.shape) == 4:  ##conv3d or conv1d not supported now, need better way
-                input = input.permute(0, 2, 3, 1)
-            input = input.reshape(-1, input.shape[-1])
-            max_tensor = torch.max(input, dim=0)[0]
-            min_tensor = torch.min(input, dim=0)[0]
-            k_index = int(input.shape[0] * percentile / 100)
-            res, _ = torch.kthvalue(torch.abs(input), k_index, dim=0)
-            ##res = torch.max(torch.abs(input),dim=0)[0]
-            if name not in self.input_maxes.keys():
-                self.input_mins[name], self.input_maxes[name] = min_tensor, max_tensor
-                self.input_maxes_abs[name] = res
-            else:
-                self.input_mins[name] = torch.min(self.input_mins[name], min_tensor)
-                self.input_maxes[name] = torch.max(self.input_maxes[name], max_tensor)
-                self.input_maxes_abs[name] = torch.max(self.input_maxes_abs[name], res)
-
-        return save_input_hook
-
-    def _add_min_max_observer(self, modules, percentile=100):
-        """
-        :param modules: the modules which the observer will insert to
-        :return:
-        """
-        self.hook_handles = []
-        for key in modules.keys():
-            hook_func = self._save_input_pc_hook(key, percentile)
-            hook_handle = modules[key].register_forward_hook(hook_func)
-            self.hook_handles.append(hook_handle)
-
-    def _remove_observer(self):
-        """Remove the observer from the model
-        :return:"""
-        for hook_handle in self.hook_handles:
-            hook_handle.remove()
-
-    def _calibrate(self, absorb_to_layer, calib_iter, percentile):
-        """
-        :param absorb_to_layer: A dict,key is the absorb layer, val is a list of the to be smoothed layer
-        :param calib_iter: Data size for calibration
-        :return: A dict that saved the layer name and the channel-wise max value info
-        """
-        ##hook all the module
-        hook_modules = {}
-        for n, module in self.model.named_modules():
-            if isinstance(module, tuple(self.op_types)):
-                hook_modules[n] = module
-
-        self._add_min_max_observer(hook_modules, percentile)
-
-        self._dump_min_max(calib_iter=calib_iter)
-        self._remove_observer()
-        return self.input_maxes_abs
-
-    def _dump_min_max(self, calib_iter=100):
-        """Dump min max per channel information, the min max value will be saved in input_maxes attribute
-        :param calibration_method: only support min_max currently
-        :param calib_iter: Sample size for calibration
-        :return:"""
-        logger.info("Calibrating...")
-        if self.q_func:
-            self.q_func(self.model)
-        else:
-            assert self.dataloader, "Please set dataloader for calibration."
-            model_forward(self.model, self.dataloader, calib_iter, self.device)
-
-    def get_blocks(self):
-        block_names = []
-        for n, m in self.model.named_modules():
-            if hasattr(type(m), "__name__") and "ModuleList" in type(m).__name__:
-                for nn, mm in m.named_children():
-                    block_name = n + "." + nn
-                    block_names.append(block_name)
-        return block_names
 
     def _scale_layer_weight(self, layer_name, scale, alpha=0.5, input_minmax=None):  ##input channel
         """Scale the layer weights at input channel, depthwise conv output channel
@@ -375,31 +293,6 @@ class TorchSmoothQuant:
         self.calib_iter = calib_iter
         return need_calib
 
-    def _get_auto_loss(self, output, output_q, loss_type="abs", loss_alpha=1.0):
-        """Get the loss for auto tuning
-        :param output: Fp32 output for one layer
-        :param output_q: Quant output for one layer
-        :param loss_type: The type of loss
-        :param loss_alpha: Loss alpha i for mean scale error
-        :return: A tensor of the loss."""
-        if len(output.shape) <= 2:
-            max_value = torch.max(torch.abs(output))
-        else:
-            output = output.reshape(output.shape[0], -1)
-            output_q = output_q.reshape(output_q.shape[0], -1)
-            max_value = torch.max(torch.abs(output), dim=-1).values.unsqueeze(-1)
-            max_value = torch.clip(max_value, 1e-5)
-        output = output / max_value  ##FIXME need copy not replace
-        output_q = output_q / max_value
-        # if loss_type == "nsr":  # nsr is unused at this point.
-        #     output[output == 0] = 1e-5
-        #     loss = torch.sum(torch.log(1.0 + torch.abs(output - output_q) / torch.abs(output)))
-        #     return loss
-        if loss_type == "abs":
-            return torch.sum(torch.pow(torch.abs(output - output_q), 0.5))
-        else:
-            return torch.sum((output - output_q) ** 2)
-
     def _get_sq_layer_names(self):
         """Get the all the hook sq layer
         :return: All the sq layer names."""
@@ -413,19 +306,19 @@ class TorchSmoothQuant:
     def _parse_absorb_to_layers(self, op_types, folding):
         str_op_types = [i.__name__ for i in op_types]
         input_maxes_abs = self.input_maxes_abs
-
+        self_absorb_layers = {}
         if self.insert_mul:
-            self.self_absorb_layers = self._get_all_layer_names(op_types)  # TODO: only support linear now.
+            self_absorb_layers = self._get_all_layer_names(op_types)  # TODO: only support linear now.
             # fetch modules with the same input
             group_modules = self._trace(str_op_types, skip_unsupported_layers=False)
             if group_modules is not None:
                 # use one input for qkv
                 for k, v in group_modules.items():
                     for i in v:
-                        if i in self.self_absorb_layers:
-                            self.self_absorb_layers.pop(i)
-                    self.self_absorb_layers[v[0]] = v
-                logger.debug(f"self_absorb_layers:{self.self_absorb_layers}")
+                        if i in self_absorb_layers:
+                            self_absorb_layers.pop(i)
+                    self_absorb_layers[v[0]] = v
+                logger.debug(f"self_absorb_layers:{self_absorb_layers}")
         if self.allow_absorb:
             self.absorb_to_layer, no_absorb_layers = self._trace(str_op_types)
             if self.absorb_to_layer is None and no_absorb_layers is None:
@@ -434,9 +327,9 @@ class TorchSmoothQuant:
         # remove self.self_absorb_layers if it exists in self.absorb_to_layer
         for k, v in self.absorb_to_layer.items():
             for i in v:
-                if i in self.self_absorb_layers:
-                    self.self_absorb_layers.pop(i)
-        self.absorb_to_layer.update(self.self_absorb_layers)
+                if i in self_absorb_layers:
+                    self_absorb_layers.pop(i)
+        self.absorb_to_layer.update(self_absorb_layers)
 
         if self.absorb_to_layer is None and no_absorb_layers is None:
             logger.warning(
@@ -468,7 +361,7 @@ class TorchSmoothQuant:
             "alpha_max": 1.0,
             "alpha_step": 0.1,
             "shared_criterion": "mean",
-            "do_blockwise": False,
+            "do_blockwise": False,  ##TODO change the name
             "alpha": 0.5,
         },
     ):
@@ -507,13 +400,28 @@ class TorchSmoothQuant:
 
         need_calibration = self._check_need_calibration(alpha, percentile, op_types, scales_per_op, calib_iter)
         if need_calibration:
-            input_maxes_abs = self._calibrate(self.absorb_to_layer, calib_iter, percentile)
+            calib = Calibration(self.model, self.dataloader, self.q_func, self.device)
+            self.input_mins, self.input_maxes = calib.calibrate(calib_iter, percentile, op_types)
+            input_maxes_abs = {}
+            for key in self.input_mins.keys():
+                input_maxes_abs[key] = torch.max(torch.abs(self.input_mins[key]), torch.abs(self.input_maxes[key]))
+
         self.absorb_to_layer = self._parse_absorb_to_layers(op_types, folding)
         if self.absorb_to_layer is None:
             logger.warning("empty absorb_to_layer, smoothquant is ignored ")
             return self.model
 
-        if alpha == "auto":
+        if alpha == "auto":  ##TODO need to polish later
+
+            def get_blocks(self):
+                block_names = []
+                for n, m in self.model.named_modules():
+                    if hasattr(type(m), "__name__") and "ModuleList" in type(m).__name__:
+                        for nn, mm in m.named_children():
+                            block_name = n + "." + nn
+                            block_names.append(block_name)
+                return block_names
+
             self.auto_alpha_args = auto_alpha_args
             scale_memo_use = 0
             for key in self.absorb_to_layer:
