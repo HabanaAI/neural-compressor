@@ -277,14 +277,14 @@ class TorchSmoothQuant:
             weight_max_per_channel = torch.max(torch.abs(torch.cat(weights, dim=0)), dim=0)[0]
 
             weight_max_per_channel = weight_max_per_channel.clamp(min=self.weight_max_lb)
-            if self.record_max_info:
-                # the input of layers with same absorb layer is the same.
-                input_minmax = [self.input_mins[layer_names[0]], self.input_maxes[layer_names[0]]]
-                self.max_value_info[key] = {}
-                self.max_value_info[key]["alpha"] = alpha_tmp
-                self.max_value_info[key]["input_minmax"] = input_minmax
-                self.max_value_info[key]["weight_max"] = weight_max_per_channel
-                self.max_value_info[key]["absorbed_layer"] = layer_names
+
+            # the input of layers with same absorb layer is the same.
+            input_minmax = [self.input_mins[layer_names[0]], self.input_maxes[layer_names[0]]]
+            self.max_value_info[key] = {}
+            self.max_value_info[key]["alpha"] = alpha_tmp
+            self.max_value_info[key]["input_minmax"] = input_minmax
+            self.max_value_info[key]["weight_max"] = weight_max_per_channel
+            self.max_value_info[key]["absorbed_layer"] = layer_names
 
     def _cal_scales(self, absorb_to_layer, input_maxes, alpha=0.5):
         """Cal the adjust scales
@@ -310,25 +310,13 @@ class TorchSmoothQuant:
                 for layer_name in layer_names:
                     weight = _reshape_in_channel_to_last(layer_name, self.model)
                     weights.append(weight)
-
-                if self._save_scale:
-                    if key in self.weight_scale_dict and alpha_tmp in self.weight_scale_dict[key]:
-                        scale = self.weight_scale_dict[key][alpha_tmp]
-                    else:
-                        scale = cal_scale(input_max, weights, alpha_tmp)
-                else:
-                    scale = cal_scale(input_max, weights, alpha_tmp)
-
+                scale = cal_scale(input_max, weights, alpha_tmp)
             absorb_scales_info[key] = 1.0 / scale
             absorb_scales_info[key][scale == 0] = 0
             layer_names = absorb_to_layer[key]
             for layer_name in layer_names:
                 ##self._scale_layer_weight(layer_name, scale)
                 weight_scales_info[layer_name] = scale
-                if self._save_scale:
-                    if layer_name not in self.weight_scale_dict:
-                        self.weight_scale_dict[layer_name] = {}
-                    self.weight_scale_dict[layer_name][alpha_tmp] = scale
         return absorb_scales_info, weight_scales_info
 
     def _adjust_parameters(self, absorb_to_layer, input_maxes, alpha=0.5):
