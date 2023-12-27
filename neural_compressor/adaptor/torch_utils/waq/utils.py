@@ -103,6 +103,25 @@ def model_forward(model, dataloader, iters, device):
                 break
 
 
+def get_block_names(model):
+    """Get the block names for transformers-like networks.
+
+    Args:
+    model: The model.
+
+    Returns:
+    block_names: A list of block names.
+    """
+    block_names = []
+    target_m = None
+    for n, m in model.named_modules():
+        if hasattr(type(m), "__name__") and "ModuleList" in type(m).__name__:
+            target_m = (n, m)
+    for n, m in target_m[1].named_children():
+        block_names.append(target_m[0] + "." + n)
+    return block_names
+
+
 def model_forward_per_sample(model, sample, device):
     try:
         output = forward_wrapper(model, sample, device)
