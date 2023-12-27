@@ -292,7 +292,7 @@ if args.quantize:
 
         # smooth quant
         print('start smoothquant ...')
-        sq_model = sq.transform(alpha=args.alpha, folding=True,
+        sq_model = sq.transform(alpha="auto", folding=False,
                                 auto_alpha_args={"alpha_min": 0.0, "alpha_max": 1.0, "alpha_step": 0.1,
                                                  "shared_criterion": "mean"})
         model_sq_max_info = sq.max_value_info
