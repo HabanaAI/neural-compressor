@@ -32,6 +32,7 @@ except:
     logger = logging.getLogger()
 
 from collections import OrderedDict
+from functools import partial
 
 import numpy
 from tqdm import tqdm
@@ -126,13 +127,233 @@ class WrapperLayer(torch.nn.Module):
         return output
 
 
+def move_input_to_device(input, device=torch.device("cpu")):
+    """Moves input data to the specified device.
+
+    Args:
+    input: The input data to be moved.
+    device: The target device.
+
+    Returns:
+    The input data on the specified device.
+    """
+    if isinstance(input, torch.Tensor):
+        return input.to(device)
+    if isinstance(input, dict) or isinstance(input, UserDict):
+        for inp in input.keys():
+            input[inp] = move_input_to_device(input[inp], device)
+    elif isinstance(input, list) or isinstance(input, tuple):
+        input_res = []
+        for inp in input:
+            input_res.append(move_input_to_device(inp, device))
+        input = input_res
+    return input
+
+
+class SaveBlockInputs:
+    """Cache the inputs of the first block."""
+
+    def __init__(self, model, dataloader, block_name):  ##TODO support qfunc
+        """Initializes the SaveInputs class.
+
+        Args:
+            model: The model to be used.
+            dataloader: The dataloader for the input data.
+            seqlen (int): The sequence length.
+            block_name (str): The name of the block.
+        """
+        self.model = model.eval()
+        self.dataloader = dataloader
+        self.inputs = {}
+        self.block_name = block_name
+
+    @torch.no_grad()
+    def get_forward_func(self, name):
+        """Gets the forward function.
+
+        Args:
+            name (str): The name of the function.
+
+        Returns:
+            function: The forward function.
+        """
+
+        def forward(_, hidden_states, *positional_args, **kwargs):
+            dim = int((hasattr(self.model, "config") and "chatglm" in self.model.config.model_type))
+            if name in self.inputs:
+                data = torch.cat([self.inputs[name]["input_ids"], hidden_states.to("cpu")], dim=dim)
+                self.inputs[name]["input_ids"] = data
+            else:
+                self.inputs[name] = {}
+                self.inputs[name]["input_ids"] = hidden_states.to("cpu")
+
+            if "positional_inputs" not in self.inputs[name]:
+                self.inputs[name]["positional_inputs"] = []
+            for idx, item in enumerate(positional_args):
+                self.inputs[name]["positional_inputs"] = move_input_to_device(positional_args)
+
+            for key in kwargs.keys():
+                if isinstance(kwargs[key], torch.Tensor) or isinstance(kwargs[key], list) or (key == "alibi"):
+                    if "attention_mask" in key:
+                        if key not in self.inputs[name].keys():
+                            self.inputs[name][key] = None
+                        if kwargs[key] is not None:
+                            if self.inputs[name][key] is not None:
+                                self.inputs[name][key] = torch.cat(
+                                    [self.inputs[name][key], kwargs[key].to("cpu")], dim=0
+                                )
+                            else:
+                                self.inputs[name][key] = kwargs[key].to("cpu")
+                    elif "alibi" in key:
+                        if key not in self.inputs[name].keys():
+                            self.inputs[name][key] = None
+                        if isinstance(kwargs[key], torch.Tensor):
+                            alibi = kwargs[key]
+                            batch = kwargs["attention_mask"].shape[0]
+                            alibi = alibi.reshape(batch, -1, alibi.shape[1], alibi.shape[2])
+                            if self.inputs[name][key] is not None:
+                                self.inputs[name][key] = torch.cat([self.inputs[name][key], alibi.to("cpu")], dim=0)
+                            else:
+                                self.inputs[name][key] = alibi.to("cpu")
+                    elif key not in self.inputs[name].keys():
+                        self.inputs[name][key] = move_input_to_device(kwargs[key], device=torch.device("cpu"))
+            raise NotImplementedError
+
+        return forward
+
+    @torch.no_grad()
+    def get_inputs(self, n_samples=512):
+        """Gets the inputs.
+
+        Args:
+            n_samples (int): The number of samples.
+
+        Returns:
+            dict: The inputs.
+        """
+        total_cnt = 0
+        self._replace_forward()
+        for data in self.dataloader:
+            if isinstance(data, tuple) or isinstance(data, list):
+                data = data[0]
+            if data is None:
+                continue
+            if isinstance(data, torch.Tensor):
+                input_ids = data.to(self.model.device)
+            else:
+                input_ids = data["input_ids"].to(self.model.device)
+            if total_cnt + input_ids.shape[0] > n_samples:
+                input_ids = input_ids[: n_samples - total_cnt, ...]
+            try:
+                self.model(input_ids)
+            except NotImplementedError:
+                pass
+            except Exception as error:
+                logger.error(error)
+            total_cnt += input_ids.shape[0]
+            if total_cnt >= n_samples:
+                break
+        self._recover_forward()
+        if total_cnt == 0:
+            logger.error(
+                f"no data has been cached, please provide more data with sequence length >={self.seqlen} in the "
+                f"dataloader or decease the sequence length"
+            )
+            exit()
+        elif total_cnt < n_samples:
+            logger.warning(
+                f"Insufficient number of samples collected may affect the quantification. "
+                f"Effective samples size:{total_cnt}, Target sample size:{n_samples}"
+            )
+        res = self.inputs[self.block_name]
+        if "input_ids" in res.keys():
+            total_samples = res["input_ids"].shape[0]
+            if total_samples < n_samples:
+                logger.warning("only cache {total_samples}")
+
+        return res
+
+    def _recover_forward(self):
+        """Recovers the forward function."""
+        for n, m in self.model.named_modules():
+            if n == self.block_name:
+                m.forward = m.orig_forward
+                delattr(m, "orig_forward")
+                break
+
+    def _replace_forward(self):
+        """Replaces the forward function."""
+        for n, m in self.model.named_modules():
+            if n == self.block_name:
+                m.orig_forward = m.forward
+                m.forward = partial(self.get_forward_func(n), m)
+                break
+
+
+def block_forward(block, input_ids, input_others, amp=False, amp_dtype=torch.float16, device=torch.device("cpu")):
+    """Performs a forward pass through a block with the given inputs.
+
+    Args:
+    block: The block to perform the forward pass on.
+    input_ids: The input IDs.
+    input_others: A dictionary containing other input data.
+    amp: A boolean indicating whether to use automatic mixed precision.
+    amp_dtype: The data type for automatic mixed precision.
+    device: The target device.
+
+    Returns:
+    output: The output of the forward pass.
+    """
+    if input_ids.device != device:
+        # input_ids, input_others = move_to_device(input_ids, input_others, device)
+        input_ids = move_input_to_device(input_ids, device)
+        input_others = move_input_to_device(input_others, device)
+    if "alibi" in input_others.keys():
+        attention_mask = input_others["attention_mask"]
+        alibi = input_others["alibi"]
+        if alibi is not None:
+            alibi = alibi.reshape(-1, alibi.shape[2], alibi.shape[3])
+        if amp and not check_is_cpu(device):
+            with autocast(device_type="cuda", dtype=amp_dtype):  # pragma: no cover
+                output = block(
+                    input_ids, attention_mask=attention_mask, alibi=alibi
+                )  ##TODO is this correct for all models with alibi?
+        elif amp and check_is_cpu(device):
+            with torch.autocast(device_type="cpu", dtype=torch.bfloat16):
+                output = block(input_ids, attention_mask=attention_mask, alibi=alibi)
+        else:
+            output = block(input_ids, attention_mask=attention_mask, alibi=alibi)
+    else:
+        input_tuple = input_others.pop("positional_inputs", None)
+        if amp and not check_is_cpu(device):
+            with autocast(device_type="cuda", dtype=amp_dtype):  # pragma: no cover
+                output = block.forward(input_ids, *input_tuple, **input_others)
+        elif amp and check_is_cpu(device):
+            with torch.autocast(device_type="cpu", dtype=torch.bfloat16):
+                output = block.forward(input_ids, *input_tuple, **input_others)
+        else:
+            output = block.forward(input_ids, *input_tuple, **input_others)
+    if isinstance(output, list) or isinstance(output, tuple):
+        output = output[0]
+    return output
+
+
 class AutoAlpha:
     def __init__(
         self,
         model,
         dataloader,
         absorb_to_layer,  ##this only for sq layers
-        auto_alpha_config,
+        init_alpha=0.5,
+        alpha_min=0.0,
+        alpha_max=1.0,
+        alpha_step=0.1,
+        shared_criterion="mean",
+        loss_type="block_wise",
+        use_quant_input=True,
+        n_samples=None,  ##512 for cuda, 128 for cpu?
+        bs=8,
+        half_precision=False,
         op_types=[torch.nn.Linear],  ##need to support other layers
         fp_layers=[],
         device="cpu",
@@ -144,8 +365,20 @@ class AutoAlpha:
         self.dataloader = dataloader
         self.q_func = q_func
         self.absorb_to_layer = absorb_to_layer
-        self.auto_alpha_config = auto_alpha_config
+        self.init_alpha = init_alpha
+        self.alpha_min = alpha_min
+        self.alpha_max = alpha_max
+        self.alpha_step = alpha_step
+        self.shared_criterion = shared_criterion
+        self.loss_type = loss_type
+        self.use_quant_input = use_quant_input
+        self.n_samples = n_samples
+        self.bs = bs
+        self.half_precision = half_precision
         self.device = device
+        if self.n_samples is None:
+            self.n_samples = 512 if "cpu" not in str(self.device) else 128
+
         self.ordered_module_names = []
         self.check_configs()
         self.quant_layers = self._get_quant_layer_names(op_types, fp_layers)
@@ -156,6 +389,22 @@ class AutoAlpha:
         self.example_inputs = example_inputs
         if self.example_inputs is None:
             self.example_inputs = self._get_example_input()
+        if self.loss_type == "model_wise" and "cpu" not in str(self.device):
+            try:
+                self.model.to(device)
+                if self.example_inputs is not None:
+                    model_forward_per_sample(self.model, self.example_inputs, self.device)
+            except:
+                logger.warning(
+                    "Due to memory constraints, the model-wide loss needs to be replaced with block-wise loss."
+                )
+                self.model.to("cpu")
+                self.loss_type = "block_wise"
+
+    def save_block_input(self, block_name):
+        save_input = SaveBlockInputs(self.model, self.dataloader, block_name)
+        first_block_inputs = save_input.get_inputs(self.n_samples)
+        return first_block_inputs
 
     def _get_quant_layer_names(self, op_types, fp_layers):
         quant_layers = []
@@ -169,6 +418,9 @@ class AutoAlpha:
         self.ordered_module_names = self._get_ordered_module()
         pre_block_modules, in_block_modules, post_block_modules = self._parse_module_info(self.model)
         assert len(pre_block_modules) == 0, "only support zero len pre block modules currently"  ##TODO handle it later
+        if len(in_block_modules) != 0:
+            first_block_name = get_block_names(self.model)[0]
+            first_block_inputs = self.save_block_input(block_name=first_block_name)
 
         tmp = 1
 

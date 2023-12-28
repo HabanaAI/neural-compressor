@@ -305,7 +305,7 @@ class TorchSmoothQuant:
     @torch.no_grad()
     def _parse_absorb_to_layers(self, op_types, folding):
         str_op_types = [i.__name__ for i in op_types]
-        # input_maxes_abs = self.input_maxes_abs
+
         self_absorb_layers = {}
         if self.insert_mul:
             self_absorb_layers = self._get_all_layer_names(op_types)  # TODO: only support linear now.
@@ -341,10 +341,12 @@ class TorchSmoothQuant:
 
         # Check if input_maxes match self.absorb_to_layer
         # (due to self._get_all_layer_names use layer tree instead of forward_path)
-        # if not folding:
-        #     diff_modules = set(self.absorb_to_layer.keys()).difference(input_maxes_abs.keys())
-        #     for d in diff_modules:
-        #         del self.absorb_to_layer[d]
+        if not folding:
+            calib = Calibration(self.model, self.dataloader, self.q_func, self.device)  ##TODO need to check with Mehmet
+            input_mins, input_maxes = calib.calibrate(1, 100, op_types)
+            diff_modules = set(self.absorb_to_layer.keys()).difference(input_mins.keys())
+            for d in diff_modules:
+                del self.absorb_to_layer[d]
         return self.absorb_to_layer
 
     @torch.no_grad()
@@ -357,13 +359,16 @@ class TorchSmoothQuant:
         scales_per_op=False,
         calib_iter=100,
         auto_alpha_args={
+            "init_alpha": 0.5,
             "alpha_min": 0.0,
             "alpha_max": 1.0,
             "alpha_step": 0.1,
             "shared_criterion": "mean",
-            "loss_type": "blockwise",  ##TODO change the name
-            "init_alpha": 0.5,
+            "loss_type": "block_wise",  ##TODO change the name
             "use_quant_input": True,
+            "n_samples": None,  ##512 for cuda, 128 for cpu?
+            "bs": 8,
+            "half_precision": True,
         },
     ):
         """The main entry of smooth quant
@@ -411,12 +416,12 @@ class TorchSmoothQuant:
                 self.model,
                 self.dataloader,
                 self.absorb_to_layer,
-                auto_alpha_args,
-                [torch.nn.Linear],
-                [],
-                self.device,
-                self.q_func,
-                self.example_inputs,
+                op_types=[torch.nn.Linear],
+                fp_layers=[],
+                device=self.device,
+                q_func=self.q_func,
+                example_inputs=self.example_inputs,
+                **auto_alpha_args,
             )
             auto_alpha.tune()
             #
@@ -521,7 +526,7 @@ class TorchSmoothQuant:
             out_pre_sq = model_forward_per_sample(self.model, example_inputs, self.device)
 
         if folding:
-            self._save_scale = False
+            self._save_scale = False  ##TODO remove it later
 
         if self.record_max_info:
             self._export_sq_info(self.absorb_to_layer, input_maxes_abs, alpha)
