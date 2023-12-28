@@ -31,6 +31,8 @@ except:
 
     logger = logging.getLogger()
 
+from collections import OrderedDict
+
 import numpy
 from tqdm import tqdm
 
@@ -129,28 +131,24 @@ class AutoAlpha:
         self,
         model,
         dataloader,
-        absorb_to_layer,
-        input_mins,
-        input_maxes,
+        absorb_to_layer,  ##this only for sq layers
         auto_alpha_config,
-        device,
-        op_types,
+        op_types=[torch.nn.Linear],  ##need to support other layers
+        fp_layers=[],
+        device="cpu",
         q_func=None,
         example_inputs=None,
     ):
         self.model = model.to("cpu")
+        self.model.eval()
         self.dataloader = dataloader
         self.q_func = q_func
         self.absorb_to_layer = absorb_to_layer
-        self.input_mins = input_mins
-        self.input_maxes = input_maxes
         self.auto_alpha_config = auto_alpha_config
         self.device = device
         self.ordered_module_names = []
         self.check_configs()
-        self.quant_layers = []
-        for key in input_mins.keys():
-            self.quant_layers.append(key)
+        self.quant_layers = self._get_quant_layer_names(op_types, fp_layers)
         self.sq_layers = []
         for key in absorb_to_layer.keys():
             self.sq_layers.extend(absorb_to_layer[key])
@@ -159,11 +157,18 @@ class AutoAlpha:
         if self.example_inputs is None:
             self.example_inputs = self._get_example_input()
 
+    def _get_quant_layer_names(self, op_types, fp_layers):
+        quant_layers = []
+        for n, m in self.model.named_modules():
+            if isinstance(m, tuple(op_types)) and n not in fp_layers:
+                quant_layers.append(n)
+        return quant_layers
+
     @torch.no_grad()
     def tune(self):
         self.ordered_module_names = self._get_ordered_module()
         pre_block_modules, in_block_modules, post_block_modules = self._parse_module_info(self.model)
-        ##for module not in block, only layerwise loss is valid
+        assert len(pre_block_modules) == 0, "only support zero len pre block modules currently"  ##TODO handle it later
 
         tmp = 1
 
@@ -171,26 +176,77 @@ class AutoAlpha:
         model = get_module(name)
 
     def _parse_module_info(self, model):
+        """Parses the module in pre/in/post blocks and returns the quantized modules for each block.
+
+        Args:
+            model: The input model to parse.
+        Returns:
+            pre_block_quant_modules: List of quantized modules in the pre block.
+            in_block_quant_modules: Dictionary of quantized modules in the in block {"block_name":[[q,k,v],[fc1],[fc2]]}.
+            post_block_quant_modules: List of quantized modules in the post block.["lm head"]
+        """
+        ##first parse the module in pre/in/post blocks
         block_names = get_block_names(model)
-        pre_block_modules = []
-        in_block_modules = []
-        post_block_modules = []
-        for block_name in block_names:
-            block_module = get_module(self.model, block_name)
-            for n, m in block_module.named_modules():
-                if hasattr(m, "name"):
-                    in_block_modules.append(m.name)
-        for name in self.ordered_module_names:
-            if name not in in_block_modules:
-                pre_block_modules.append(name)
-            else:
-                break
-        for name in reversed(self.ordered_module_names):
-            if name not in in_block_modules:
-                post_block_modules.append(name)
-            else:
-                break
-        return pre_block_modules, in_block_modules, post_block_modules
+        tmp_pre_block_quant_modules = []
+        tmp_in_block_quant_modules = OrderedDict()
+        tmp_in_block_quant_modules_list = []
+        tmp_post_block_quant_modules = []
+        if len(block_names) == 0:
+            tmp_post_block_quant_modules = self.ordered_module_names
+        else:
+            for block_name in block_names:
+                tmp_in_block_quant_modules[block_name] = tmp_in_block_quant_modules.get(block_name, [])
+                block_module = get_module(self.model, block_name)
+                for n, m in block_module.named_modules():
+                    if hasattr(m, "name"):
+                        tmp_in_block_quant_modules[block_name].append(m.name)
+                        tmp_in_block_quant_modules_list.append(m.name)
+            for name in self.ordered_module_names:
+                if name not in tmp_in_block_quant_modules_list:
+                    tmp_pre_block_quant_modules.append(name)
+                else:
+                    break
+            for name in reversed(self.ordered_module_names):
+                if name not in tmp_in_block_quant_modules_list:
+                    tmp_post_block_quant_modules.append(name)
+                else:
+                    break
+
+        handled = []
+        pre_block_quant_modules = []
+        in_block_quant_modules = OrderedDict()
+        post_block_quant_modules = []
+        shared_info = {}
+        for key in self.absorb_to_layer:
+            layer_names = self.absorb_to_layer[key]  ##all shad name
+            for layer_name in layer_names:
+                shared_info[layer_name] = list(set(layer_names) & set(self.quant_layers))
+
+        for name in tmp_pre_block_quant_modules:
+            if name in handled:
+                continue
+            shared_layers = list(set(shared_info[name]) & set(self.quant_layers))
+            pre_block_quant_modules.append(shared_layers)
+            handled.extend(shared_layers)
+
+        for key in tmp_in_block_quant_modules.keys():
+            names = tmp_in_block_quant_modules[key]
+            in_block_quant_modules[key] = in_block_quant_modules.get(key, [])
+            for name in names:
+                if name in handled:
+                    continue
+                shared_layers = list(set(shared_info[name]) & set(self.quant_layers))
+                in_block_quant_modules[key].append(shared_layers)
+                handled.extend(shared_layers)
+
+        for name in tmp_post_block_quant_modules:
+            if name in handled:
+                continue
+            shared_layers = list(set(shared_info[name]) & set(self.quant_layers))
+            post_block_quant_modules.append(shared_layers)
+            handled.extend(shared_layers)
+
+        return pre_block_quant_modules, in_block_quant_modules, post_block_quant_modules
 
     def check_configs(self):
         assert self.dataloader is not None or self.q_func is not None

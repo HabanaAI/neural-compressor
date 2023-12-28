@@ -305,7 +305,7 @@ class TorchSmoothQuant:
     @torch.no_grad()
     def _parse_absorb_to_layers(self, op_types, folding):
         str_op_types = [i.__name__ for i in op_types]
-        input_maxes_abs = self.input_maxes_abs
+        # input_maxes_abs = self.input_maxes_abs
         self_absorb_layers = {}
         if self.insert_mul:
             self_absorb_layers = self._get_all_layer_names(op_types)  # TODO: only support linear now.
@@ -341,10 +341,10 @@ class TorchSmoothQuant:
 
         # Check if input_maxes match self.absorb_to_layer
         # (due to self._get_all_layer_names use layer tree instead of forward_path)
-        if not folding:
-            diff_modules = set(self.absorb_to_layer.keys()).difference(input_maxes_abs.keys())
-            for d in diff_modules:
-                del self.absorb_to_layer[d]
+        # if not folding:
+        #     diff_modules = set(self.absorb_to_layer.keys()).difference(input_maxes_abs.keys())
+        #     for d in diff_modules:
+        #         del self.absorb_to_layer[d]
         return self.absorb_to_layer
 
     @torch.no_grad()
@@ -361,8 +361,9 @@ class TorchSmoothQuant:
             "alpha_max": 1.0,
             "alpha_step": 0.1,
             "shared_criterion": "mean",
-            "do_blockwise": False,  ##TODO change the name
-            "alpha": 0.5,
+            "loss_type": "blockwise",  ##TODO change the name
+            "init_alpha": 0.5,
+            "use_quant_input": True,
         },
     ):
         """The main entry of smooth quant
@@ -398,14 +399,6 @@ class TorchSmoothQuant:
 
         self.recover()
 
-        need_calibration = self._check_need_calibration(alpha, percentile, op_types, scales_per_op, calib_iter)
-        if need_calibration:
-            calib = Calibration(self.model, self.dataloader, self.q_func, self.device)
-            self.input_mins, self.input_maxes = calib.calibrate(calib_iter, percentile, op_types)
-            input_maxes_abs = {}
-            for key in self.input_mins.keys():
-                input_maxes_abs[key] = torch.max(torch.abs(self.input_mins[key]), torch.abs(self.input_maxes[key]))
-
         self.absorb_to_layer = self._parse_absorb_to_layers(op_types, folding)
         if self.absorb_to_layer is None:
             logger.warning("empty absorb_to_layer, smoothquant is ignored ")
@@ -418,9 +411,9 @@ class TorchSmoothQuant:
                 self.model,
                 self.dataloader,
                 self.absorb_to_layer,
-                self.input_mins,
-                self.input_maxes,
                 auto_alpha_args,
+                [torch.nn.Linear],
+                [],
                 self.device,
                 self.q_func,
                 self.example_inputs,
@@ -515,6 +508,14 @@ class TorchSmoothQuant:
             #         sq_info=sq_info,
             #     )
             #     alpha = auto_tuner._auto_tune_alpha()
+        else:
+            need_calibration = self._check_need_calibration(alpha, percentile, op_types, scales_per_op, calib_iter)
+            if need_calibration:
+                calib = Calibration(self.model, self.dataloader, self.q_func, self.device)
+                self.input_mins, self.input_maxes = calib.calibrate(calib_iter, percentile, op_types)
+                input_maxes_abs = {}
+                for key in self.input_mins.keys():
+                    input_maxes_abs[key] = torch.max(torch.abs(self.input_mins[key]), torch.abs(self.input_maxes[key]))
 
         if example_inputs is not None:
             out_pre_sq = model_forward_per_sample(self.model, example_inputs, self.device)
