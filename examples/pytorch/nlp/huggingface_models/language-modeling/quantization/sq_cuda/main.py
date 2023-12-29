@@ -78,6 +78,44 @@ args = parser.parse_args()
 
 calib_size = 1
 
+from transformers import BridgeTowerProcessor, BridgeTowerModel
+import requests
+from PIL import Image
+
+
+# def BridgeTowerQfunc(model):
+#     url = "http://images.cocodataset.org/val2017/000000039769.jpg"
+#     image = Image.open(requests.get(url, stream=True).raw)
+#     text = "hello world"
+#
+#     # Prepare inputs
+#     encoding = processor(image, text, return_tensors="pt")
+#     # Forward pass
+#     outputs = model(**encoding)
+#     # outputs.keys()
+#     # module_info = []
+#     # for n, m in model.named_modules():
+#     #     if isinstance(m, tuple([torch.nn.Linear, torch.nn.Conv2d])):
+#     #         module_info.append((n, type(m)))
+#
+#
+# from neural_compressor.adaptor.torch_utils.waq import TorchSmoothQuant
+#
+# model_path = "/dataset/bridgetower-base"
+# processor = BridgeTowerProcessor.from_pretrained(model_path)
+# model = BridgeTowerModel.from_pretrained(model_path)
+# module_info = []
+# for n, m in model.named_modules():
+#     if isinstance(m, tuple([torch.nn.Linear, torch.nn.Conv2d])):
+#         module_info.append((n, type(m)))
+# sq = TorchSmoothQuant(model, q_func=BridgeTowerQfunc)
+# sq.transform(0.5, folding=True)
+
+# sq.record_max_info = True
+
+# smooth quant
+
+
 # model
 if re.search("llama", args.model.lower()):
     from transformers import LlamaForCausalLM, LlamaTokenizer

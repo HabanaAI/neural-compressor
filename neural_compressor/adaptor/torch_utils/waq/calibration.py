@@ -38,7 +38,7 @@ class Calibration:
         self.device = device
 
     @torch.no_grad()
-    def _save_input_pc_hook(self, name, percentile=100):
+    def _save_input_pc_hook(self, name):
         """A forward hook to save input max of a module
         :param name: the module name
         :return: A hook function."""
@@ -51,28 +51,23 @@ class Calibration:
             input = input.reshape(-1, input.shape[-1])
             max_tensor = torch.max(input, dim=0)[0]
             min_tensor = torch.min(input, dim=0)[0]
-            k_index = int(input.shape[0] * percentile / 100)
-            res, _ = torch.kthvalue(torch.abs(input), k_index, dim=0)
-            ##res = torch.max(torch.abs(input),dim=0)[0]
             if name not in self.input_maxes.keys():
                 self.input_mins[name], self.input_maxes[name] = min_tensor, max_tensor
-                # self.input_maxes_abs[name] = res
             else:
                 self.input_mins[name] = torch.min(self.input_mins[name], min_tensor)
                 self.input_maxes[name] = torch.max(self.input_maxes[name], max_tensor)
-                # self.input_maxes_abs[name] = torch.max(self.input_maxes_abs[name], res)
 
         return save_input_hook
 
     @torch.no_grad()
-    def _add_min_max_observer(self, modules, percentile=100):
+    def _add_min_max_observer(self, modules):
         """
         :param modules: the modules which the observer will insert to
         :return:
         """
         self.hook_handles = []
         for key in modules.keys():
-            hook_func = self._save_input_pc_hook(key, percentile)
+            hook_func = self._save_input_pc_hook(key)
             hook_handle = modules[key].register_forward_hook(hook_func)
             self.hook_handles.append(hook_handle)
 
@@ -97,9 +92,7 @@ class Calibration:
             model_forward(self.model, self.dataloader, calib_iter, self.device)
 
     @torch.no_grad()
-    def calibrate(
-        self, calib_iter, percentile=100, op_types=[torch.nn.Conv2d, torch.nn.Linear]
-    ):  ##TODO transformers.conv1d
+    def calibrate(self, calib_iter, op_types=[torch.nn.Conv2d, torch.nn.Linear]):  ##TODO transformers.conv1d
         """
         :param absorb_to_layer: A dict,key is the absorb layer, val is a list of the to be smoothed layer
         :param calib_iter: Data size for calibration
@@ -114,7 +107,7 @@ class Calibration:
             if isinstance(module, tuple(op_types)):
                 hook_modules[n] = module
 
-        self._add_min_max_observer(hook_modules, percentile)
+        self._add_min_max_observer(hook_modules)
 
         self._dump_min_max(calib_iter=calib_iter)
         self._remove_observer()
