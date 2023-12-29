@@ -412,10 +412,12 @@ class TorchSmoothQuant:
 
         self.recover()
         need_calibration = self._check_need_calibration(alpha, percentile, op_types, scales_per_op, calib_iter)
+        if need_calibration:
+            self.input_mins, self.input_maxes = {}, {}
         self.absorb_to_layer = self._parse_absorb_to_layers(
             op_types, folding
         )  ##need to forward to check modules not used in forward
-        if len(self.input_mins) != 0:
+        if len(self.input_mins) != 0:  ##this is from _parse_absorb_to_layers, ugly code to support q_func
             input_maxes_abs = {}
             for key in self.input_mins.keys():
                 input_maxes_abs[key] = torch.max(torch.abs(self.input_mins[key]), torch.abs(self.input_maxes[key]))
