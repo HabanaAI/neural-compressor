@@ -83,7 +83,6 @@ class TorchSmoothQuant:
         self.max_value_info = {}  # to record max values for alpha tune
         self.absorb_to_layer = {}
         self.weight_max_lb = 1e-5  ##weight max low bound
-        self._save_scale = False
         self.weight_scale_dict = {}
 
     def _get_device(self):
@@ -372,11 +371,12 @@ class TorchSmoothQuant:
             "alpha_max": 1.0,
             "alpha_step": 0.1,
             "shared_criterion": "mean",
-            "loss_type": "block_wise",  ##TODO change the name
+            "loss_type": "block_wise",
             "use_quant_input": True,
             "n_samples": None,  ##512 for cuda, 128 for cpu?
             "bs": 8,
             "half_precision": True,
+            "version": "latest",
         },
     ):
         """The main entry of smooth quant
@@ -410,7 +410,7 @@ class TorchSmoothQuant:
         else:
             self.insert_mul, self.allow_absorb = True, False
 
-        self.recover()
+        self.revert()
         need_calibration = self._check_need_calibration(alpha, percentile, op_types, scales_per_op, calib_iter)
         if need_calibration:
             self.input_mins, self.input_maxes = {}, {}
@@ -442,95 +442,95 @@ class TorchSmoothQuant:
                 **auto_alpha_args,
             )
             auto_alpha.tune()
-            #
-            # def get_blocks(self):
-            #     block_names = []
-            #     for n, m in self.model.named_modules():
-            #         if hasattr(type(m), "__name__") and "ModuleList" in type(m).__name__:
-            #             for nn, mm in m.named_children():
-            #                 block_name = n + "." + nn
-            #                 block_names.append(block_name)
-            #     return block_names
-            #
-            # self.auto_alpha_args = auto_alpha_args
-            # scale_memo_use = 0
-            # for key in self.absorb_to_layer:
-            #     layer_name = self.absorb_to_layer[key][0]
-            #     input_max = input_maxes_abs[layer_name]
-            #     scale_memo_use += 4 * input_max.shape[0] * len(self.absorb_to_layer[key])
-            # if alpha == "auto":
-            #     alpha_space = (auto_alpha_args["alpha_max"] - auto_alpha_args["alpha_min"]) / auto_alpha_args[
-            #         "alpha_step"
-            #     ] + 1
-            #     scale_memo_use *= alpha_space
-            # self._save_scale = enough_memo_store_scale(self.device, scale_memo_use)
-            #
-            # if isinstance(auto_alpha_args, dict):
-            #     self.do_blockwise = auto_alpha_args.get("do_blockwise", False)
-            # else:
-            #     self.do_blockwise = False
-            # if self.do_blockwise:
-            #     self.block_names = self.get_blocks()
-            #     logger.info("Blockwise auto-tuning will be performed")
-            #
-            # if self.do_blockwise:
-            #     module_names = self._get_sq_layer_names()
-            #     block_names, self.block_to_module = self.block_names, {}
-            #     for block in block_names:
-            #         self.block_to_module[block] = []
-            #     for module in module_names:
-            #         checked = False
-            #         for block in block_names:
-            #             if block + "." in module:
-            #                 self.block_to_module[block].append(module)
-            #                 checked = True
-            #         if not checked:
-            #             self.block_to_module[module] = [module]
-            #     self.block_names = list(self.block_to_module.keys())
-            #     logger.info(f"Blockwise auto-tuning: {len(self.block_names)} blocks found")
-            #     logger.debug(f"Blockwise auto-tuning blocks info: {self.block_to_module}")
-            # from .auto_alpha import AlphaTuner  # Call
-            #
-            # layers_info = {"absorb_to_layer": self.absorb_to_layer}
-            # sq_info = {
-            #     "op_types": op_types,
-            #     "record_max_info": self.record_max_info,
-            #     "insert_mul": self.insert_mul,
-            #     "allow_absorb": self.allow_absorb,
-            #     "weight_clip": self.weight_clip,
-            #     "_save_scale": self._save_scale,
-            # }
-            # input_info = {
-            #     "input_mins": self.input_mins,
-            #     "input_maxes": self.input_maxes,
-            #     "input_maxes_abs": self.input_maxes_abs,
-            # }
-            # auto_alpha_args["default_alpha"] = auto_alpha_args.get("alpha", 0.5)
-            # auto_alpha_args["calib_sample_num"] = 32
-            # if self.do_blockwise:
-            #     block_info = {"block_names": {self.block_names}, "block_to_module": self.block_to_module}
-            #     auto_tuner = AlphaTuner(
-            #         model=self.model,
-            #         dataloader=self.dataloader,
-            #         input_info=input_info,
-            #         auto_alpha_args=auto_alpha_args,
-            #         layers_info=layers_info,
-            #         device=self.device,
-            #         sq_info=sq_info,
-            #         block_info=block_info,
-            #     )
-            #     alpha = auto_tuner._auto_tune_alpha_blockwise()
-            # else:  # (self, model, dataloader, input_info, auto_alpha_args, layers_info, device, sq_info, block_info):
-            #     auto_tuner = AlphaTuner(
-            #         model=self.model,
-            #         dataloader=self.dataloader,
-            #         input_info=input_info,
-            #         auto_alpha_args=auto_alpha_args,
-            #         layers_info=layers_info,
-            #         device=self.device,
-            #         sq_info=sq_info,
-            #     )
-            #     alpha = auto_tuner._auto_tune_alpha()
+        #
+        # def get_blocks(self):
+        #     block_names = []
+        #     for n, m in self.model.named_modules():
+        #         if hasattr(type(m), "__name__") and "ModuleList" in type(m).__name__:
+        #             for nn, mm in m.named_children():
+        #                 block_name = n + "." + nn
+        #                 block_names.append(block_name)
+        #     return block_names
+        #
+        # self.auto_alpha_args = auto_alpha_args
+        # scale_memo_use = 0
+        # for key in self.absorb_to_layer:
+        #     layer_name = self.absorb_to_layer[key][0]
+        #     input_max = input_maxes_abs[layer_name]
+        #     scale_memo_use += 4 * input_max.shape[0] * len(self.absorb_to_layer[key])
+        # if alpha == "auto":
+        #     alpha_space = (auto_alpha_args["alpha_max"] - auto_alpha_args["alpha_min"]) / auto_alpha_args[
+        #         "alpha_step"
+        #     ] + 1
+        #     scale_memo_use *= alpha_space
+        # self._save_scale = enough_memo_store_scale(self.device, scale_memo_use)
+        #
+        # if isinstance(auto_alpha_args, dict):
+        #     self.do_blockwise = auto_alpha_args.get("do_blockwise", False)
+        # else:
+        #     self.do_blockwise = False
+        # if self.do_blockwise:
+        #     self.block_names = self.get_blocks()
+        #     logger.info("Blockwise auto-tuning will be performed")
+        #
+        # if self.do_blockwise:
+        #     module_names = self._get_sq_layer_names()
+        #     block_names, self.block_to_module = self.block_names, {}
+        #     for block in block_names:
+        #         self.block_to_module[block] = []
+        #     for module in module_names:
+        #         checked = False
+        #         for block in block_names:
+        #             if block + "." in module:
+        #                 self.block_to_module[block].append(module)
+        #                 checked = True
+        #         if not checked:
+        #             self.block_to_module[module] = [module]
+        #     self.block_names = list(self.block_to_module.keys())
+        #     logger.info(f"Blockwise auto-tuning: {len(self.block_names)} blocks found")
+        #     logger.debug(f"Blockwise auto-tuning blocks info: {self.block_to_module}")
+        # from .auto_alpha import AlphaTuner  # Call
+        #
+        # layers_info = {"absorb_to_layer": self.absorb_to_layer}
+        # sq_info = {
+        #     "op_types": op_types,
+        #     "record_max_info": self.record_max_info,
+        #     "insert_mul": self.insert_mul,
+        #     "allow_absorb": self.allow_absorb,
+        #     "weight_clip": self.weight_clip,
+        #     "_save_scale": self._save_scale,
+        # }
+        # input_info = {
+        #     "input_mins": self.input_mins,
+        #     "input_maxes": self.input_maxes,
+        #     "input_maxes_abs": self.input_maxes_abs,
+        # }
+        # auto_alpha_args["default_alpha"] = auto_alpha_args.get("alpha", 0.5)
+        # auto_alpha_args["calib_sample_num"] = 32
+        # if self.do_blockwise:
+        #     block_info = {"block_names": {self.block_names}, "block_to_module": self.block_to_module}
+        #     auto_tuner = AlphaTuner(
+        #         model=self.model,
+        #         dataloader=self.dataloader,
+        #         input_info=input_info,
+        #         auto_alpha_args=auto_alpha_args,
+        #         layers_info=layers_info,
+        #         device=self.device,
+        #         sq_info=sq_info,
+        #         block_info=block_info,
+        #     )
+        #     alpha = auto_tuner._auto_tune_alpha_blockwise()
+        # else:  # (self, model, dataloader, input_info, auto_alpha_args, layers_info, device, sq_info, block_info):
+        #     auto_tuner = AlphaTuner(
+        #         model=self.model,
+        #         dataloader=self.dataloader,
+        #         input_info=input_info,
+        #         auto_alpha_args=auto_alpha_args,
+        #         layers_info=layers_info,
+        #         device=self.device,
+        #         sq_info=sq_info,
+        #     )
+        #     alpha = auto_tuner._auto_tune_alpha()
         elif need_calibration:
             calib = Calibration(self.model, self.dataloader, self.q_func, self.device)
             self.input_mins, self.input_maxes = calib.calibrate(calib_iter, op_types)
@@ -557,7 +557,7 @@ class TorchSmoothQuant:
         self.model._smoothquant_optimized = True
 
         if example_inputs is not None:
-            # Check mathematical equivelancy
+            # Check mathematical equivalency
             out_post_sq = model_forward_per_sample(self.model, example_inputs, self.device)
             if not self.output_is_equal(out_post_sq, out_pre_sq):
                 logger.warning(
@@ -585,16 +585,16 @@ class TorchSmoothQuant:
             )
             return True
 
-    def recover(self):
-        """Recover the model weights
+    @torch.no_grad()
+    def revert(self):
+        """Revert the model weights
         :return:"""
-        with torch.no_grad():
-            for key in self.weight_scale_info:
-                self._scale_layer_weight(key, 1.0 / self.weight_scale_info[key])
-            for key in self.absorb_scales_info:
-                self._absorb_scales(key, 1.0 / self.absorb_scales_info[key])
-            self.weight_scale_info = {}  ##clear the data
-            self.absorb_scales_info = {}
+        for key in self.weight_scale_info:
+            self._scale_layer_weight(key, 1.0 / self.weight_scale_info[key])
+        for key in self.absorb_scales_info:
+            self._absorb_scales(key, 1.0 / self.absorb_scales_info[key])
+        self.weight_scale_info = {}  ##clear the data
+        self.absorb_scales_info = {}
 
     def _get_all_layer_names(self, op_types=[torch.nn.Linear]):
         """Try the model to find the layers which can be smooth quantized.

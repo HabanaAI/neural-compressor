@@ -236,6 +236,8 @@ if args.quantize:
             last_ind = []
             for text in batch:
                 input_ids = text["input_ids"]
+                if input_ids.shape[0]< args.pad_max_length:
+                    return None
                 pad_len = self.pad_max - input_ids.shape[0]
                 last_ind.append(input_ids.shape[0] - 1)
                 if self.is_calib:

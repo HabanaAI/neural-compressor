@@ -196,14 +196,12 @@ class SaveBlockInputs:
                 if isinstance(kwargs[key], torch.Tensor) or isinstance(kwargs[key], list) or (key == "alibi"):
                     if "attention_mask" in key:
                         if key not in self.inputs[name].keys():
-                            self.inputs[name][key] = None
+                            self.inputs[name][key] = []
                         if kwargs[key] is not None:
                             if self.inputs[name][key] is not None:
-                                self.inputs[name][key] = torch.cat(
-                                    [self.inputs[name][key], kwargs[key].to("cpu")], dim=0
-                                )
+                                self.inputs[name][key].append(kwargs[key].to("cpu"))
                             else:
-                                self.inputs[name][key] = kwargs[key].to("cpu")
+                                self.inputs[name][key] = [kwargs[key].to("cpu")]
                     elif "alibi" in key:
                         if key not in self.inputs[name].keys():
                             self.inputs[name][key] = None
@@ -212,9 +210,9 @@ class SaveBlockInputs:
                             batch = kwargs["attention_mask"].shape[0]
                             alibi = alibi.reshape(batch, -1, alibi.shape[1], alibi.shape[2])
                             if self.inputs[name][key] is not None:
-                                self.inputs[name][key] = torch.cat([self.inputs[name][key], alibi.to("cpu")], dim=0)
+                                self.inputs[name][key].append(alibi.to("cpu"))
                             else:
-                                self.inputs[name][key] = alibi.to("cpu")
+                                self.inputs[name][key] = [alibi.to("cpu")]
                     elif key not in self.inputs[name].keys():
                         self.inputs[name][key] = move_input_to_device(kwargs[key], device=torch.device("cpu"))
             raise NotImplementedError
@@ -234,10 +232,10 @@ class SaveBlockInputs:
         total_cnt = 0
         self._replace_forward()
         for data in self.dataloader:
-            if isinstance(data, tuple) or isinstance(data, list):
-                data = data[0]
             if data is None:
                 continue
+            if isinstance(data, tuple) or isinstance(data, list):
+                data = data[0]
             if isinstance(data, torch.Tensor):
                 input_ids = data.to(self.model.device)
             else:
