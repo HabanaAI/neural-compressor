@@ -87,17 +87,15 @@ class WrapperLayer(torch.nn.Module):
 
     @torch.no_grad()
     def update_scale(self, input_scale, weight_scale):
-        self.layer = copy.deepcopy(self.orig_layer)
+        self.q_layer = copy.deepcopy(self.orig_layer)
         self.input_scale = input_scale
         self.weight_scale = weight_scale
         self.x_q_scale, self.x_q_zp = self._calculate_qparams(self.input_min, self.input_max, self.input_scale)
-        self.layer.weight *= weight_scale
-        self.w_q_scale = self._get_weight_scale(self.layer.weight)
-        self.layer_quant = copy.deepcopy(self.layer)
+        self.q_layer.weight *= weight_scale
+        self.w_q_scale = self._get_weight_scale(self.q_layer.weight)
 
-        self.layer_quant.weight *= self.weight_scale
-        q_dq_weight = quant_dequant_w(self.layer_quant.weight, self.w_q_scale, self.weight_bits)
-        self.layer_quant.weight.data.copy_(q_dq_weight)
+        q_dq_weight = quant_dequant_w(self.q_layer.weight, self.w_q_scale, self.weight_bits)
+        self.q_layer.weight.data.copy_(q_dq_weight)
 
     # def quant_dequant_w(self, weight, scale, zp):
     #     weight = weight / scale
@@ -111,7 +109,7 @@ class WrapperLayer(torch.nn.Module):
     def q_dq_forward(self, x):
         x = self.input_scale * x
         x = quant_dequant_x(x, self.x_q_scale, self.x_q_zp, self.act_bits)  ##FIXME
-        output = self.layer_quant(x)
+        output = self.q_layer(x)
         return output
 
     def forward(self, x):
@@ -418,7 +416,14 @@ class AutoAlpha:
         return quant_layers
 
     def tune_group_layers_with_block_loss(self, group, loss_module, loss_input):
-        pass
+        layer_name = group[0]
+        first_module = get_module(self.model, layer_name)  ##the name is in the whole model
+        input_min, input_max = first_module.input_min, first_module.input_max
+        weights = []
+        for layer_name in group:
+            module = get_module(self.model, layer_name)
+            weights.append(module.orig_layer.weight)
+        tmp = 1
 
     def tune_single_block(self, module, input):  ##block_loss
         ##module {block_name:[q,k,v],[fc1,][fc2]}
@@ -440,7 +445,7 @@ class AutoAlpha:
             set_module(module, n, new_layer)
         ##for each layer group, tune
         for group in ordered_submodules:
-            self.tune_group_layers_with_block_loss(group, module, inpur)
+            self.tune_group_layers_with_block_loss(group, module, input)
 
         tmp = 1
 

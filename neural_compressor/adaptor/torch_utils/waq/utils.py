@@ -273,8 +273,6 @@ def cal_scale(input_max, weights, alpha, weight_max_lb=1e-5):
     weight_power = torch.pow(weight_max, 1 - alpha)
     scale = torch.clip(input_power / weight_power, min=1e-5)
     scale[input_power == 0] = 1.0
-    if input_power.size() == weight_power.size():
-        scale[weight_power == 0] = 0.0  ##FIXME
     return scale
 
 
