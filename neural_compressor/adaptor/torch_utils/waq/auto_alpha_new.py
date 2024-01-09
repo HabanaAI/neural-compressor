@@ -47,27 +47,27 @@ class WrapperLayer(torch.nn.Module):
         self.orig_layer = layer
         self.add_module("orig_layer", layer)  # set orig_layer in get/set_module
         self.quant = False
-        self.q_input = None
         self.input_max = input_max
         self.input_min = input_min
-        self.weight_scale = None
-        self.input_scale = None
-        self.input_q_min, self.input_q_max = 0, 2**act_bits  ## asym default
-        self.weight_q_min, self.weight_q_max = -(2.0 ** (weight_bits - 1)), 2.0 ** (weight_bits - 1) - 1.0
+        self.act_bits = act_bits
+        self.weight_bits = weight_bits
+        self.weight_scale = 1.0
+        self.input_scale = 1.0
         self.eps = 1e-5
         # self.eps = torch.finfo(torch.float32).eps
 
     def _calculate_qparams(self, input_min, input_max, input_scale=1.0):
         # calculate scale and zero_point
+        input_q_min, input_q_max = 0, 2**self.act_bits  ## asym default
         min_val = torch.min(input_min * input_scale)
         max_val = torch.max(input_max * input_scale)
         # work when min_val bigger than zero.
         min_val_neg = torch.min(min_val, torch.zeros_like(min_val))
         max_val_pos = torch.max(max_val, torch.zeros_like(max_val))
-        scale = (max_val_pos - min_val_neg) / float(self.input_q_max - self.input_q_min)
+        scale = (max_val_pos - min_val_neg) / float(input_q_max - input_q_min)
         scale = torch.max(scale, torch.tensor(self.eps, device=scale.device))
-        zero_point = self.input_q_min - torch.round(min_val_neg / scale).to(torch.int)
-        zero_point = torch.clamp(zero_point, self.input_q_min, self.input_q_max)
+        zero_point = input_q_min - torch.round(min_val_neg / scale).to(torch.int)
+        zero_point = torch.clamp(zero_point, input_q_min, input_q_max)
         return scale, zero_point
 
     def _get_weight_scale(self):
@@ -90,9 +90,14 @@ class WrapperLayer(torch.nn.Module):
         self.layer = copy.deepcopy(self.orig_layer)
         self.input_scale = input_scale
         self.weight_scale = weight_scale
-        self.x_scale, self.x_zp = self._calculate_qparams(self.input_min, self.input_max, self.input_scale)
+        self.x_q_scale, self.x_q_zp = self._calculate_qparams(self.input_min, self.input_max, self.input_scale)
         self.layer.weight *= weight_scale
-        self.w_scale = self._get_weight_scale(self.layer.weight)
+        self.w_q_scale = self._get_weight_scale(self.layer.weight)
+        self.layer_quant = copy.deepcopy(self.layer)
+
+        self.layer_quant.weight *= self.weight_scale
+        q_dq_weight = quant_dequant_w(self.layer_quant.weight, self.w_q_scale, self.weight_bits)
+        self.layer_quant.weight.data.copy_(q_dq_weight)
 
     # def quant_dequant_w(self, weight, scale, zp):
     #     weight = weight / scale
@@ -103,24 +108,15 @@ class WrapperLayer(torch.nn.Module):
     #     q_x.clamp_(q_min, q_max)
 
     ##TODO better tradeoff performance and memory, currently it's too slow
-    def q_dq_forward(self, x, input_scale, weight_scale):
-        layer_copy = self.layer
-
-        if weight_scale is not None:
-            layer_copy.weight *= weight_scale
-        q_dq_weight = quant_dequant_w(layer_copy)
-        layer_copy.weight.data.copy_(q_dq_weight)
-        if input_scale is None:
-            x = quant_dequant_x(x, self.input_min, self.input_max)
-        else:
-            x = input_scale * x
-            x = quant_dequant_x(x, self.input_min * input_scale, self.input_max * input_scale)  ##FIXME
-        output = layer_copy(x)
+    def q_dq_forward(self, x):
+        x = self.input_scale * x
+        x = quant_dequant_x(x, self.x_q_scale, self.x_q_zp, self.act_bits)  ##FIXME
+        output = self.layer_quant(x)
         return output
 
     def forward(self, x):
         if self.quant:
-            output = self.q_dq_forward(x, self.input_scale, self.weight_scale)
+            output = self.q_dq_forward(x)
         else:
             output = self.orig_layer(x)
         self.output = output
@@ -181,11 +177,11 @@ class SaveBlockInputs:
         def forward(_, hidden_states, *positional_args, **kwargs):
             dim = int((hasattr(self.model, "config") and "chatglm" in self.model.config.model_type))
             if name in self.inputs:
-                data = torch.cat([self.inputs[name]["input_ids"], hidden_states.to("cpu")], dim=dim)
-                self.inputs[name]["input_ids"] = data
+                # data = torch.cat([self.inputs[name]["input_ids"], hidden_states.to("cpu")], dim=dim)
+                self.inputs[name]["input_ids"].append(hidden_states.to("cpu"))
             else:
                 self.inputs[name] = {}
-                self.inputs[name]["input_ids"] = hidden_states.to("cpu")
+                self.inputs[name]["input_ids"] = [hidden_states.to("cpu")]
 
             if "positional_inputs" not in self.inputs[name]:
                 self.inputs[name]["positional_inputs"] = []
@@ -265,7 +261,9 @@ class SaveBlockInputs:
             )
         res = self.inputs[self.block_name]
         if "input_ids" in res.keys():
-            total_samples = res["input_ids"].shape[0]
+            total_samples = 0
+            for item in res["input_ids"]:
+                total_samples += item.shape[0]
             if total_samples < n_samples:
                 logger.warning("only cache {total_samples}")
 
@@ -357,6 +355,8 @@ class AutoAlpha:
         device="cpu",
         q_func=None,
         example_inputs=None,
+        act_bits=8,
+        w_bits=8,
     ):
         self.model = model.to("cpu")
         self.model.eval()
@@ -396,8 +396,14 @@ class AutoAlpha:
                 logger.warning(
                     "Due to memory constraints, the model-wide loss needs to be replaced with block-wise loss."
                 )
-                self.model.to("cpu")
+
                 self.loss_type = "block_wise"
+            self.model.to("cpu")
+        if self.loss_type == "block_wise":
+            pass  ##
+            ##TODO check whether could do in block-wise and use quant_input way easily, otherwise using layer-wise,for example, mutimodal model
+        self.act_bits = act_bits
+        self.w_bits = w_bits
 
     def save_block_input(self, block_name):
         save_input = SaveBlockInputs(self.model, self.dataloader, block_name)
@@ -411,14 +417,79 @@ class AutoAlpha:
                 quant_layers.append(n)
         return quant_layers
 
+    def tune_group_layers_with_block_loss(self, group, loss_module, loss_input):
+        pass
+
+    def tune_single_block(self, module, input):  ##block_loss
+        ##module {block_name:[q,k,v],[fc1,][fc2]}
+        ##calibration
+        block_name = module[0]
+        ordered_submodules = module[1]
+        module = get_module(self.model, block_name)
+        module.to(self.device)
+        from .calibration import Calibration
+
+        calib = Calibration(module, dataloder=None, q_func=self.block_qfunc)
+        self.q_func_input = input
+        input_mins, input_maxes = calib.calibrate(-1)
+        ##wrapper layers
+        for n, m in module.named_modules():
+            if not hasattr(m, "name"):
+                continue
+            new_layer = WrapperLayer(m, input_mins[n], input_maxes[n], self.act_bits, self.w_bits)
+            set_module(module, n, new_layer)
+        ##for each layer group, tune
+        for group in ordered_submodules:
+            self.tune_group_layers_with_block_loss(group, module, inpur)
+
+        tmp = 1
+
+    def block_qfunc(self, module):
+        input_ids = self.q_func_input["input_ids"]
+        self.q_func_input.pop("input_ids")
+        input_others = self.q_func_input
+        for index in range(len(input_ids)):
+            input_ids_tmp = input_ids[index]
+            input_others_tmps = {}
+            for k, v in input_others.items():
+                if len(v) > 1:
+                    input_others_tmps[k] = v[index]
+                else:
+                    input_others_tmps[k] = v
+
+            block_forward(
+                module,
+                input_ids=input_ids_tmp,
+                input_others=input_others_tmps,
+                amp=self.half_precision,
+                device=self.device,
+            )
+
+    def tune_with_quant_input(self, modules):
+        first_block_name = None
+        for key in modules.keys():
+            first_block_name = key
+            break
+        block_inputs = self.save_block_input(first_block_name)
+        for item in modules.items():
+            self.tune_single_block(item, block_inputs)
+            ##TODO reset the block_inputs
+
+    def tune_wo_quant_input(self, block_names, layer_names):
+        pass
+
     @torch.no_grad()
     def tune(self):
         self.ordered_module_names = self._get_ordered_module()
-        pre_block_modules, in_block_modules, post_block_modules = self._parse_module_info(self.model)
+        pre_block_modules, in_block_modules, post_block_modules = self._parse_module_info(
+            self.model
+        )  ##TODO there are bug for multimodal model
         assert len(pre_block_modules) == 0, "only support zero len pre block modules currently"  ##TODO handle it later
-        if len(in_block_modules) != 0:
-            first_block_name = get_block_names(self.model)[0]
-            first_block_inputs = self.save_block_input(block_name=first_block_name)
+        if len(in_block_modules) != 0 and self.use_quant_input:
+            self.tune_with_quant_input(in_block_modules)
+            self.tune_wo_quant_input([], post_block_modules)
+        else:
+            self.tune_wo_quant_input(in_block_modules, post_block_modules)
 
         tmp = 1
 
@@ -441,26 +512,37 @@ class AutoAlpha:
         tmp_in_block_quant_modules = OrderedDict()
         tmp_in_block_quant_modules_list = []
         tmp_post_block_quant_modules = []
-        if len(block_names) == 0:
-            tmp_post_block_quant_modules = self.ordered_module_names
-        else:
-            for block_name in block_names:
-                tmp_in_block_quant_modules[block_name] = tmp_in_block_quant_modules.get(block_name, [])
-                block_module = get_module(self.model, block_name)
-                for n, m in block_module.named_modules():
-                    if hasattr(m, "name"):
-                        tmp_in_block_quant_modules[block_name].append(m.name)
-                        tmp_in_block_quant_modules_list.append(m.name)
-            for name in self.ordered_module_names:
-                if name not in tmp_in_block_quant_modules_list:
-                    tmp_pre_block_quant_modules.append(name)
-                else:
-                    break
-            for name in reversed(self.ordered_module_names):
-                if name not in tmp_in_block_quant_modules_list:
-                    tmp_post_block_quant_modules.append(name)
-                else:
-                    break
+
+        for block_name in block_names:
+            tmp_in_block_quant_modules[block_name] = tmp_in_block_quant_modules.get(block_name, [])
+            block_module = get_module(self.model, block_name)
+            for n, m in block_module.named_modules():
+                if hasattr(m, "name"):
+                    tmp_in_block_quant_modules[block_name].append(m.name)
+                    tmp_in_block_quant_modules_list.append(m.name)
+        for name in self.ordered_module_names:
+            if name not in tmp_in_block_quant_modules_list:
+                tmp_pre_block_quant_modules.append(name)
+            else:
+                break
+        for name in reversed(self.ordered_module_names):
+            if name not in tmp_in_block_quant_modules_list and name not in tmp_pre_block_quant_modules:
+                tmp_post_block_quant_modules.append(name)
+            else:
+                break
+
+        ##make in block ordered
+        layer_to_block_name = OrderedDict()
+        for block_name, layer_name_in_blocks in tmp_in_block_quant_modules.items():
+            for layer in layer_name_in_blocks:
+                layer_to_block_name[layer] = block_name
+        tmp_in_block_quant_modules = {}
+        for name in self.ordered_module_names:
+            if name not in layer_to_block_name.keys():
+                continue
+            block_name = layer_to_block_name[name]
+            tmp_in_block_quant_modules[block_name] = tmp_in_block_quant_modules.get(block_name, [])
+            tmp_in_block_quant_modules[block_name].append(name)
 
         handled = []
         pre_block_quant_modules = []

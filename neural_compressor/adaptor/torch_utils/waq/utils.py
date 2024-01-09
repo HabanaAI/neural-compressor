@@ -132,75 +132,81 @@ def model_forward_per_sample(model, sample, device):
         return output
 
 
-def quant_dequant_w(m, num_bits=8, scheme="sym"):
-    eps = torch.finfo(torch.float32).eps
-    if isinstance(m, torch.nn.Linear):
-        x = m.weight
-        tmp = torch.zeros(torch.max(x, dim=1).values.size())
-        if scheme == "sym":
-            q_min, q_max = -(2.0 ** (num_bits - 1)), 2.0 ** (num_bits - 1) - 1.0
-            x_max = torch.max(torch.abs(x), dim=1).values
-            scale = x_max / (float(q_max - q_min) / 2)
-        else:
-            q_min, q_max = 0, 2.0**num_bits - 1.0
-            x_max = torch.maximum(torch.max(x, dim=1).values, tmp)
-            x_min = torch.minimum(torch.min(x, dim=1).values, tmp)
-            scale = (x_max - x_min) / (2**num_bits - 1)
+# def quant_dequant_w(m, num_bits=8, scheme="sym"):
+#     eps = torch.finfo(torch.float32).eps
+#     if isinstance(m, torch.nn.Linear):
+#         x = m.weight
+#         tmp = torch.zeros(torch.max(x, dim=1).values.size())
+#         if scheme == "sym":
+#             q_min, q_max = -(2.0 ** (num_bits - 1)), 2.0 ** (num_bits - 1) - 1.0
+#             x_max = torch.max(torch.abs(x), dim=1).values
+#             scale = x_max / (float(q_max - q_min) / 2)
+#         else:
+#             q_min, q_max = 0, 2.0**num_bits - 1.0
+#             x_max = torch.maximum(torch.max(x, dim=1).values, tmp)
+#             x_min = torch.minimum(torch.min(x, dim=1).values, tmp)
+#             scale = (x_max - x_min) / (2**num_bits - 1)
+#
+#         scale = torch.clip(scale, min=eps)
+#
+#         if scheme == "sym":
+#             bias = 0
+#         else:
+#             bias = torch.round(0 - (torch.min(x, dim=1).values) / scale)
+#             bias = bias.unsqueeze(dim=-1)
+#         scale = scale.unsqueeze(dim=-1)
+#         q_x = torch.round(x / scale + bias)
+#         q_x.clamp_(q_min, q_max)
+#         return (q_x - bias) * scale
+#     elif isinstance(m, torch.nn.Conv2d):  ##TODO polish code
+#         x = m.weight
+#         x = torch.permute(x, (0, 2, 3, 1))
+#         x = x.reshape(-1, x.shape[-1])
+#         tmp = torch.zeros(torch.max(x, dim=0).values.size())
+#         if scheme == "sym":
+#             q_min, q_max = -(2.0 ** (num_bits - 1)), 2.0 ** (num_bits - 1) - 1.0
+#             x_max = torch.max(torch.abs(x), dim=0).values
+#             scale = x_max / (2 ** (num_bits - 1) - 1)
+#         else:
+#             q_min, q_max = 0, 2.0**num_bits - 1.0
+#             x_max = torch.maximum(torch.max(x, dim=0).values, tmp)
+#             x_min = torch.minimum(torch.min(x, dim=0).values, tmp)
+#             scale = (x_max - x_min) / (2**num_bits - 1)
+#         scale = torch.clip(scale, min=eps)
+#         if scheme == "sym":
+#             bias = 0
+#         else:
+#             bias = torch.round(0 - (torch.min(x, dim=0).values) / scale)
+#             bias = bias.unsqueeze(dim=0)
+#         scale = scale.unsqueeze(dim=0)
+#
+#         q_x = x / scale + bias
+#         q_x.clamp_(q_min, q_max).round_()
+#         q_dq_x = (q_x - bias) * scale
+#         q_dq_x = q_dq_x.view(m.weight.shape[0], m.weight.shape[2], m.weight.shape[3], m.weight.shape[1])
+#         q_dq_x = torch.permute(q_dq_x, (0, 3, 1, 2))
+#         return q_dq_x
+#     else:
+#         logger.warning("unsupported layer type, please have a check")
 
-        scale = torch.clip(scale, min=eps)
 
-        if scheme == "sym":
-            bias = 0
-        else:
-            bias = torch.round(0 - (torch.min(x, dim=1).values) / scale)
-            bias = bias.unsqueeze(dim=-1)
-        scale = scale.unsqueeze(dim=-1)
-        q_x = torch.round(x / scale + bias)
-        q_x.clamp_(q_min, q_max)
-        return (q_x - bias) * scale
-    elif isinstance(m, torch.nn.Conv2d):  ##TODO polish code
-        x = m.weight
-        x = torch.permute(x, (0, 2, 3, 1))
-        x = x.reshape(-1, x.shape[-1])
-        tmp = torch.zeros(torch.max(x, dim=0).values.size())
-        if scheme == "sym":
-            q_min, q_max = -(2.0 ** (num_bits - 1)), 2.0 ** (num_bits - 1) - 1.0
-            x_max = torch.max(torch.abs(x), dim=0).values
-            scale = x_max / (2 ** (num_bits - 1) - 1)
-        else:
-            q_min, q_max = 0, 2.0**num_bits - 1.0
-            x_max = torch.maximum(torch.max(x, dim=0).values, tmp)
-            x_min = torch.minimum(torch.min(x, dim=0).values, tmp)
-            scale = (x_max - x_min) / (2**num_bits - 1)
-        scale = torch.clip(scale, min=eps)
-        if scheme == "sym":
-            bias = 0
-        else:
-            bias = torch.round(0 - (torch.min(x, dim=0).values) / scale)
-            bias = bias.unsqueeze(dim=0)
-        scale = scale.unsqueeze(dim=0)
-
-        q_x = x / scale + bias
-        q_x.clamp_(q_min, q_max).round_()
-        q_dq_x = (q_x - bias) * scale
-        q_dq_x = q_dq_x.view(m.weight.shape[0], m.weight.shape[2], m.weight.shape[3], m.weight.shape[1])
-        q_dq_x = torch.permute(q_dq_x, (0, 3, 1, 2))
-        return q_dq_x
-    else:
-        logger.warning("unsupported layer type, please have a check")
+def quant_dequant_w(x, scale, num_bits=8):  ##default sym
+    q_min, q_max = -(2.0 ** (num_bits - 1)), 2.0 ** (num_bits - 1) - 1.0
+    q_x = torch.round(x / scale)
+    q_x.clamp_(q_min, q_max)
+    return scale * q_x
 
 
-def quant_dequant_x(x, min_x=None, max_x=None, num_bits=8):
-    eps = torch.finfo(torch.float32).eps
+def quant_dequant_x(x, scale, bias, num_bits=8):  ##default asym
     q_min, q_max = 0, 2.0**num_bits - 1.0
-    if max_x is None or min_x is None:
-        max_x, min_x = torch.max(x), torch.min(x)
-    else:
-        max_x = torch.max(max_x)
-        min_x = torch.min(min_x)
-    scale = (max_x - min_x) / (2**num_bits - 1)
-    scale = torch.clip(scale, min=eps)
-    bias = torch.round((0 - min_x) / scale)
+    # if max_x is None or min_x is None:
+    #     max_x, min_x = torch.max(x), torch.min(x)
+    # else:
+    #     max_x = torch.max(max_x)
+    #     min_x = torch.min(min_x)
+    # scale = (max_x - min_x) / (2**num_bits - 1)
+    # scale = torch.clip(scale, min=eps)
+    # bias = torch.round((0 - min_x) / scale)
     q_x = torch.round(x / scale + bias)
     q_x.clamp_(q_min, q_max)
     return scale * (q_x - bias)
