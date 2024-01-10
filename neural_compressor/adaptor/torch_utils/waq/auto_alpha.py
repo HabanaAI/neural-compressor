@@ -38,31 +38,78 @@ from tqdm import tqdm
 from .utils import *
 
 
-class AlphaTuner:
-    def __init__(self, model, dataloader, input_info, auto_alpha_args, layers_info, device, sq_info, block_info=None):
-        """Initialize the AlphaTuner with necessary parameters and components."""
-        self.model = model
+class AutoAlpha:
+    def __init__(self, model, dataloader, absorb_to_layer, op_types, fp_layers, device, q_func, example_inputs, 
+        weight_clip=True, record_max_info=True, input_maxes={}, input_mins={}, input_maxes_abs={},
+        alpha_min=0.3, alpha_max=0.7, alpha_step=0.1, shared_criterion='mean', init_alpha=0.5, do_blockwise=False, n_samples=32):
+        """Initialize the AutoAlpha tuner with necessary parameters and components."""
+
+        self.model = model.to("cpu")
+        self.model.eval()
         self.dataloader = dataloader
-        self.input_maxes = input_info["input_maxes"]
-        self.input_mins = input_info["input_mins"]
-        self.input_maxes_abs = input_info["input_maxes_abs"]
-        self.calib_sample_num = auto_alpha_args["calib_sample_num"]
-        self.alpha_min = auto_alpha_args["alpha_min"]
-        self.alpha_max = auto_alpha_args["alpha_max"]
-        self.alpha_step = auto_alpha_args["alpha_step"]
-        self.shared_criterion = auto_alpha_args["shared_criterion"]
-        self.default_alpha = auto_alpha_args["default_alpha"]
-        self.op_types = sq_info["op_types"]
-        self.absorb_to_layer = layers_info["absorb_to_layer"]
+        self.alpha_min = alpha_min
+        self.alpha_max = alpha_max
+        self.alpha_step = alpha_step
+        self.shared_criterion = shared_criterion
+        self.init_alpha = init_alpha
+        self.loss_type = 'blockwise' if do_blockwise else 'model_wise'
+        self.calib_sample_num = n_samples
+        self.op_types = op_types
+        self.absorb_to_layer = absorb_to_layer
         self.weight_scale_dict = {}
+        self.q_func = q_func
+        self.example_inputs = example_inputs
         self.max_value_info = {}  # to record max values for alpha tune
-        self.record_max_info = sq_info["record_max_info"]
-        self.insert_mul = sq_info["insert_mul"]
-        self.allow_absorb = sq_info["allow_absorb"]
-        self.weight_clip = sq_info["weight_clip"]
-        self._save_scale = sq_info["_save_scale"]
+        self.record_max_info = record_max_info[0] if isinstance(record_max_info, tuple) else record_max_info
+        self.weight_clip = weight_clip[0] if isinstance(weight_clip, tuple) else weight_clip
+        self.input_maxes = input_maxes[0] if isinstance(input_maxes, tuple) else input_maxes
+        self.input_mins = input_mins[0] if isinstance(input_mins, tuple) else input_mins
+        self.input_maxes_abs = input_maxes_abs if isinstance(input_maxes_abs, tuple) else input_maxes_abs
         self.device = device
-        self.block_info = block_info
+    def tune(self):
+
+        scale_memo_use = 0
+        for key in self.absorb_to_layer:
+            logger.info(key)
+            layer_name = self.absorb_to_layer[key][0]
+            logger.info(layer_name)
+            input_max = self.input_maxes_abs[layer_name]
+            scale_memo_use += 4 * input_max.shape[0] * len(self.absorb_to_layer[key])
+        alpha_space_len = (self.alpha_max - self.alpha_min) / self.alpha_step + 1
+        scale_memo_use *= alpha_space_len
+        self._save_scale = enough_memo_store_scale(self.device, scale_memo_use)
+
+        if self.loss_type == 'blockwise':
+            self.block_names = self.get_blocks()
+            logger.info("Blockwise auto-tuning will be performed")
+            module_names = self._get_sq_layer_names()
+            block_names, self.block_to_module = self.block_names, {}
+            for block in block_names:
+                self.block_to_module[block] = []
+            for module in module_names:
+                checked = False
+                for block in block_names:
+                    if block + "." in module:
+                        self.block_to_module[block].append(module)
+                        checked = True
+                if not checked:
+                    self.block_to_module[module] = [module]
+            self.block_names = list(self.block_to_module.keys())
+            logger.info(f"Blockwise auto-tuning: {len(self.block_names)} blocks found")
+            logger.debug(f"Blockwise auto-tuning blocks info: {self.block_to_module}")
+            return self._auto_tune_alpha_blockwise()
+        else:
+            return self._auto_tune_alpha()
+
+
+    def get_blocks(self):
+        block_names = []
+        for n, m in self.model.named_modules():
+            if hasattr(type(m), "__name__") and "ModuleList" in type(m).__name__:
+                for nn, mm in m.named_children():
+                    block_name = n + "." + nn
+                    block_names.append(block_name)
+        return block_names
 
     def _add_blockwise_observer(self, block_modules):
         """
@@ -83,7 +130,6 @@ class AlphaTuner:
         def save_blockwise_hook(module, inputs, outputs):
             self.block_inputs[name] = inputs[0]
             self.block_outputs[name] = outputs[0]
-
         return save_blockwise_hook
 
     def _get_all_hook_module_names(self):
@@ -100,8 +146,8 @@ class AlphaTuner:
                 layer = get_module(self.model, layer_name)
                 input_scale = absorb_scales[key]
                 weight_scale = weight_scales[layer_name]
-                input_scale = self._reshape_scale_for_input(layer, input_scale)
-                weight_scale = self._reshape_scale_for_weight(layer, weight_scale)
+                input_scale = reshape_scale_as_input(layer, input_scale)
+                weight_scale = reshape_scale_as_weight(layer, weight_scale)
                 layer.update_scale(input_scale, weight_scale)  ##FIXME
 
     def _change_qdq_for_auto(self, enable=True):
@@ -435,7 +481,7 @@ class AlphaTuner:
 
         # model scale calculation and update  -- lyt
         absorb_input_scales, weight_scales = self._cal_scales(
-            self.absorb_to_layer, self.input_maxes_abs, self.default_alpha, tuning=True
+            self.absorb_to_layer, self.input_maxes_abs, self.init_alpha, tuning=True
         )
         self._update_scales_for_auto(absorb_input_scales, weight_scales)
         return absorb_input_scales, weight_scales
@@ -453,7 +499,7 @@ class AlphaTuner:
             self.calib_sample_num // tune_cnt if self.calib_sample_num >= tune_cnt else self.calib_sample_num
         )
         self.fp32_output_val = {}
-        best_alphas = self.default_alpha
+        best_alphas = self.init_alpha
 
         if not self.dataloader:
             logger.info(f"Auto-tuning failed due to no dataloader, using {best_alphas} instead.")
@@ -545,9 +591,6 @@ class AlphaTuner:
     def _auto_tune_alpha_blockwise(self):
         """Perform blockwise-alpha-tuning to obtain layer-wise optimal alpha values and adjust parameters accordingly."""
         logger.info("Start block-wise alpha tuning")
-
-        self.block_names = self.block_info["block_names"]
-        self.block_to_module = self.block_info["block_to_module"]
         self.block_inputs, self.block_outputs = {}, {}
 
         absorb_input_scales, weight_scales = self.default_tune_setup()
@@ -559,7 +602,7 @@ class AlphaTuner:
             self.calib_sample_num // tune_cnt if self.calib_sample_num >= tune_cnt else self.calib_sample_num
         )
         self.fp32_output_val = {}
-        best_alphas = self.default_alpha
+        best_alphas = self.init_alpha
 
         if not self.dataloader:
             logger.info(f"Auto-tuning failed due to no dataloader, using {best_alphas} instead.")
@@ -672,60 +715,3 @@ def _reshape_in_channel_to_last(layer_name, model):
     return weight
 
 
-# def _cal_scales(absorb_to_layer, input_maxes, alpha=0.5, tuning=False, device, model):
-#     """Cal the adjust scales
-#     :param absorb_to_layer: A dict mapping absorb layer to smooth quantized layer
-#     :param input_maxes: The channel-wise input max info for layers
-#     :param alpha: Alpha value to balance the quantization difficulty of activation and weight, a float of a dict
-#     :return:"""
-#     absorb_to_input_maxes = {}
-#     for key in absorb_to_layer.keys():
-#         layer_name = absorb_to_layer[key][0]
-#         absorb_to_input_maxes[key] = input_maxes[layer_name]
-
-#     weight_scales_info = {}
-#     absorb_scales_info = {}
-#     for index, key in enumerate(absorb_to_layer.keys()):
-#         alpha_tmp = alpha[key] if isinstance(alpha, dict) else alpha
-#         if alpha_tmp < 0:
-#             scale = torch.ones((1), device=device)
-#         else:
-#             input_max = absorb_to_input_maxes[key]
-#             layer_names = absorb_to_layer[key]
-#             weights = []
-#             for layer_name in layer_names:
-#                 weight = _reshape_in_channel_to_last(layer_name, model=model)
-#                 weights.append(weight)
-
-#             weight_max_per_channel = torch.max(torch.abs(torch.cat(weights, dim=0)), dim=0)[0]
-#             if self.weight_clip:
-#                 weight_max_per_channel = weight_max_per_channel.clamp(min=1e-5)
-#             if self.record_max_info and not tuning:
-#                 # the input of layers with same absorb layer is the same.
-#                 input_minmax = [self.input_mins[layer_names[0]], self.input_maxes[layer_names[0]]]
-#                 self.max_value_info[key] = {}
-#                 self.max_value_info[key]["alpha"] = alpha_tmp
-#                 self.max_value_info[key]["input_minmax"] = input_minmax
-#                 self.max_value_info[key]["weight_max"] = weight_max_per_channel
-#                 self.max_value_info[key]["absorbed_layer"] = layer_names
-#                 continue
-
-#             if self._save_scale:
-#                 if key in self.weight_scale_dict and alpha_tmp in self.weight_scale_dict[key]:
-#                     scale = self.weight_scale_dict[key][alpha_tmp]
-#                 else:
-#                     scale = cal_scale(input_max, weights, alpha_tmp)
-#             else:
-#                 scale = cal_scale(input_max, weights, alpha_tmp)
-
-#         absorb_scales_info[key] = 1.0 / scale
-#         absorb_scales_info[key][scale == 0] = 0
-#         layer_names = absorb_to_layer[key]
-#         for layer_name in layer_names:
-#             ##self._scale_layer_weight(layer_name, scale)
-#             weight_scales_info[layer_name] = scale
-#             if self._save_scale:
-#                 if layer_name not in self.weight_scale_dict:
-#                     self.weight_scale_dict[layer_name] = {}
-#                 self.weight_scale_dict[layer_name][alpha_tmp] = scale
-#     return absorb_scales_info, weight_scales_info
