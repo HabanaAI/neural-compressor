@@ -450,8 +450,10 @@ class AutoAlpha:
                 module.update_scale(input_scale, weight_scale)
                 module.enable_quant()
             quant_output = self.block_forward_whole_input(block, quant_input_ids, input_others)
+            loss = 0
+            for i in range(len(quant_output)):
+                loss += torch.mean(torch.abs(quant_output[i].to(self.device) - fp32_output[i].to(self.device)) ** 2)
 
-            loss = torch.mean(torch.abs(torch.cat(fp32_output, dim=0) - torch.cat(quant_output, dim=0)) ** 2)
             if loss < best_loss:
                 best_weight_scale = weight_scale
                 best_input_scale = input_scale
@@ -495,6 +497,7 @@ class AutoAlpha:
             )
 
         q_output_ids = self.block_forward_whole_input(block, input_ids, input_others)
+        block.to("cpu")
         return fp_output_ids, q_output_ids
 
     def block_forward_whole_input(self, block, input_ids, input_others):
@@ -517,7 +520,7 @@ class AutoAlpha:
             )
             if isinstance(output, tuple) or isinstance(output, dict):
                 output = output[0]
-            outputs.append(output)
+            outputs.append(output.to("cpu"))
         # outputs = torch.cat(outputs, dim=0)
         return outputs
 
