@@ -84,7 +84,6 @@ class Calibration:
         :param calibration_method: only support min_max currently
         :param calib_iter: Sample size for calibration
         :return:"""
-        logger.info("Calibrating...")
         if self.q_func:
             self.q_func(self.model)
         else:

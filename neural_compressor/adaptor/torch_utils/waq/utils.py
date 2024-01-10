@@ -191,6 +191,7 @@ def model_forward_per_sample(model, sample, device):
 
 
 def quant_dequant_w(x, scale, num_bits=8):  ##default sym
+    scale = scale.unsqueeze(dim=1)
     q_min, q_max = -(2.0 ** (num_bits - 1)), 2.0 ** (num_bits - 1) - 1.0
     q_x = torch.round(x / scale)
     q_x.clamp_(q_min, q_max)
@@ -264,16 +265,31 @@ def set_module(model, key, new_module):
     setattr(module, name_list[-1], new_module)
 
 
-def cal_scale(input_max, weights, alpha, weight_max_lb=1e-5):
+def cal_scale(input_max_abs, weights, alpha, weight_max_lb=1e-5):
     weights = torch.cat(weights, dim=0)
     weight_max = torch.max(torch.abs(weights), dim=0)[0]
     weight_max = torch.clip(weight_max, weight_max_lb)
-    input_power = torch.pow(input_max, alpha)
-    logger.debug(f"{max(input_max)}, {min(input_max)}")
+    input_power = torch.pow(input_max_abs, alpha)
+    logger.debug(f"{max(input_max_abs)}, {min(input_max_abs)}")
     weight_power = torch.pow(weight_max, 1 - alpha)
-    scale = torch.clip(input_power / weight_power, min=1e-5)
-    scale[input_power == 0] = 1.0
-    return scale
+    weight_scale = torch.clip(input_power / weight_power, min=1e-5)
+    weight_scale[input_power == 0] = 1.0
+    return weight_scale
+
+
+def reshape_in_channel_to_last(layer_name, model):
+    """Move the input channel to the last dim
+    :param layer_name: Layer name
+    :return: The reshaped weight."""
+    layer = get_module(model, layer_name)
+    if layer.__class__.__name__ == "WrapperLayer":
+        layer = layer.orig_layer
+
+    weight = layer.weight  ##TODO oc*ic, support transposed conv
+    if len(weight.shape) == 4:
+        weight = weight.permute(0, 2, 3, 1)
+        weight = weight.reshape(-1, weight.shape[-1])
+    return weight
 
 
 class WrapperLayer(torch.nn.Module):

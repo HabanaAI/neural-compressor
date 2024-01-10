@@ -70,13 +70,14 @@ class WrapperLayer(torch.nn.Module):
         zero_point = torch.clamp(zero_point, input_q_min, input_q_max)
         return scale, zero_point
 
-    def _get_weight_scale(self):
+    def _get_weight_scale(self, weight):
         # get weight scale and zero_point
         from torch.ao.quantization.observer import default_per_channel_weight_observer
 
         obs = default_per_channel_weight_observer()
-        obs(self.sq_linear.weight)
-        scale, _ = obs.calculate_qparams()  ##/scale,need to have a check
+        obs(weight)
+        scale, _ = obs.calculate_qparams()
+        scale = scale.to(weight.device)
         return scale
 
     def enable_quant(self):
@@ -117,7 +118,6 @@ class WrapperLayer(torch.nn.Module):
             output = self.q_dq_forward(x)
         else:
             output = self.orig_layer(x)
-        self.output = output
         return output
 
 
@@ -373,7 +373,7 @@ class AutoAlpha:
         self.half_precision = half_precision
         self.device = device
         if self.n_samples is None:
-            self.n_samples = 512 if "cpu" not in str(self.device) else 128
+            self.n_samples = 128 if "cpu" not in str(self.device) else 128  ##TODO change back
 
         self.ordered_module_names = []
         self.check_configs()
@@ -415,44 +415,90 @@ class AutoAlpha:
                 quant_layers.append(n)
         return quant_layers
 
-    def tune_group_layers_with_block_loss(self, group, loss_module, loss_input):
+    def tune_group_layers_with_block_loss(
+        self, group, block, fp32_output, input_ids, input_others, quant_input_ids=None
+    ):
         layer_name = group[0]
         first_module = get_module(self.model, layer_name)  ##the name is in the whole model
         input_min, input_max = first_module.input_min, first_module.input_max
+
+        input_maxes_abs = torch.max(torch.abs(input_min), torch.abs(input_max))
+
+        ## get fp32 output
+
         weights = []
         for layer_name in group:
-            module = get_module(self.model, layer_name)
-            weights.append(module.orig_layer.weight)
-        tmp = 1
+            weight = reshape_in_channel_to_last(layer_name, self.model)
+            weights.append(weight)
+        round_num = max(  # Initialize the alpha search space
+            len(str(self.alpha_min).split(".")[1]),
+            len(str(self.alpha_max).split(".")[1]),
+            len(str(self.alpha_step).split(".")[1]),
+        )
+        alpha_space = numpy.round(
+            numpy.arange(self.alpha_min, self.alpha_max + self.alpha_step, self.alpha_step), round_num
+        ).tolist()
+        best_loss = torch.finfo(torch.float32).max
+        best_weight_scale = None
+        best_input_scale = None
+        best_alpha = None
+        for alpha in reversed(alpha_space):
+            weight_scale = cal_scale(input_maxes_abs, weights, alpha)
+            input_scale = 1.0 / weight_scale
+            for layer_name in group:
+                module = get_module(self.model, layer_name)
+                module.update_scale(input_scale, weight_scale)
+                module.enable_quant()
+            quant_output = self.block_forward_whole_input(block, quant_input_ids, input_others)
 
-    def tune_single_block(self, module, input):  ##block_loss
+            loss = torch.mean(torch.abs(torch.cat(fp32_output, dim=0) - torch.cat(quant_output, dim=0)) ** 2)
+            if loss < best_loss:
+                best_weight_scale = weight_scale
+                best_input_scale = input_scale
+                best_loss = loss
+                best_alpha = alpha
+
+        logger.info(f"{layer_name}:{best_alpha}")
+
+        for layer_name in group:
+            module = get_module(self.model, layer_name)
+            module.update_scale(best_input_scale, best_weight_scale)
+            module.enable_quant()
+
+    def tune_single_block(self, block_name_mapping_layers, input_ids, input_others, quant_input_ids):  ##block_loss
         ##module {block_name:[q,k,v],[fc1,][fc2]}
         ##calibration
-        block_name = module[0]
-        ordered_submodules = module[1]
-        module = get_module(self.model, block_name)
-        module.to(self.device)
+        block_name = block_name_mapping_layers[0]
+        ordered_layers_list = block_name_mapping_layers[1]
+        block = get_module(self.model, block_name)
+        block.to(self.device)
         from .calibration import Calibration
 
-        calib = Calibration(module, dataloder=None, q_func=self.block_qfunc)
-        self.q_func_input = input
+        calib = Calibration(block, dataloder=None, q_func=self.block_qfunc)
+        self.q_func_input_ids = quant_input_ids
+        self.q_func_input_others = input_others
         input_mins, input_maxes = calib.calibrate(-1)
         ##wrapper layers
-        for n, m in module.named_modules():
+        for n, m in block.named_modules():
             if not hasattr(m, "name"):
                 continue
             new_layer = WrapperLayer(m, input_mins[n], input_maxes[n], self.act_bits, self.w_bits)
-            set_module(module, n, new_layer)
+            set_module(block, n, new_layer)
         ##for each layer group, tune
-        for group in ordered_submodules:
-            self.tune_group_layers_with_block_loss(group, module, input)
 
-        tmp = 1
+        fp_output_ids = self.block_forward_whole_input(
+            block, input_ids, input_others
+        )  ##TODO, should we move the output to cpu?
+        for group in ordered_layers_list:
+            self.tune_group_layers_with_block_loss(
+                group, block, fp_output_ids, input_ids, input_others, quant_input_ids
+            )
 
-    def block_qfunc(self, module):
-        input_ids = self.q_func_input["input_ids"]
-        self.q_func_input.pop("input_ids")
-        input_others = self.q_func_input
+        q_output_ids = self.block_forward_whole_input(block, input_ids, input_others)
+        return fp_output_ids, q_output_ids
+
+    def block_forward_whole_input(self, block, input_ids, input_others):
+        outputs = []
         for index in range(len(input_ids)):
             input_ids_tmp = input_ids[index]
             input_others_tmps = {}
@@ -462,22 +508,56 @@ class AutoAlpha:
                 else:
                     input_others_tmps[k] = v
 
-            block_forward(
-                module,
+            output = block_forward(
+                block,
                 input_ids=input_ids_tmp,
                 input_others=input_others_tmps,
                 amp=self.half_precision,
                 device=self.device,
             )
+            if isinstance(output, tuple) or isinstance(output, dict):
+                output = output[0]
+            outputs.append(output)
+        # outputs = torch.cat(outputs, dim=0)
+        return outputs
 
-    def tune_with_quant_input(self, modules):
+    def block_qfunc(self, block):
+        input_ids = self.q_func_input_ids
+
+        input_others = self.q_func_input_others
+        self.block_forward_whole_input(block, input_ids, input_others)
+        # for index in range(len(input_ids)):
+        #     input_ids_tmp = input_ids[index]
+        #     input_others_tmps = {}
+        #     for k, v in input_others.items():
+        #         if len(v) > 1:
+        #             input_others_tmps[k] = v[index]
+        #         else:
+        #             input_others_tmps[k] = v
+        #
+        #     block_forward(
+        #         module,
+        #         input_ids=input_ids_tmp,
+        #         input_others=input_others_tmps,
+        #         amp=self.half_precision,
+        #         device=self.device,
+        #     )
+
+    def tune_with_quant_input(self, block_name_dict):
         first_block_name = None
-        for key in modules.keys():
+        for key in block_name_dict.keys():
             first_block_name = key
             break
         block_inputs = self.save_block_input(first_block_name)
-        for item in modules.items():
-            self.tune_single_block(item, block_inputs)
+        input_ids = block_inputs["input_ids"]
+        block_inputs.pop("input_ids")
+        input_others = block_inputs
+        q_input_ids = input_ids
+        for block_name_mapping_layers in block_name_dict.items():
+            input_ids, q_input_ids = self.tune_single_block(
+                block_name_mapping_layers, input_ids, input_others, q_input_ids
+            )
+            tmp = 1
             ##TODO reset the block_inputs
 
     def tune_wo_quant_input(self, block_names, layer_names):
@@ -486,15 +566,15 @@ class AutoAlpha:
     @torch.no_grad()
     def tune(self):
         self.ordered_module_names = self._get_ordered_module()
-        pre_block_modules, in_block_modules, post_block_modules = self._parse_module_info(
+        pre_layer_names, block_name_dict, post_layer_names = self._parse_module_info(
             self.model
         )  ##TODO there are bug for multimodal model
-        assert len(pre_block_modules) == 0, "only support zero len pre block modules currently"  ##TODO handle it later
-        if len(in_block_modules) != 0 and self.use_quant_input:
-            self.tune_with_quant_input(in_block_modules)
-            self.tune_wo_quant_input([], post_block_modules)
+        assert len(pre_layer_names) == 0, "only support zero len pre block modules currently"  ##TODO handle it later
+        if len(block_name_dict) != 0 and self.use_quant_input:
+            self.tune_with_quant_input(block_name_dict)
+            self.tune_wo_quant_input([], post_layer_names)
         else:
-            self.tune_wo_quant_input(in_block_modules, post_block_modules)
+            self.tune_wo_quant_input(block_name_dict, post_layer_names)
 
         tmp = 1
 
