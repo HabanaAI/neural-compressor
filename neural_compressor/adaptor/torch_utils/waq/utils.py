@@ -90,6 +90,8 @@ def model_forward(model, dataloader, iters, device):
     try:
         cnt = 0
         for idx, (input, label) in enumerate(dataloader):
+            if input is None:
+                continue
             output = forward_wrapper(model, input, device)
             cnt += 1
             if iters != -1 and cnt >= iters:
@@ -196,6 +198,21 @@ def quant_dequant_w(x, scale, num_bits=8):  ##default sym
     q_x = torch.round(x / scale)
     q_x.clamp_(q_min, q_max)
     return scale * q_x
+
+
+# def quant_dequant_x(x, max_x, min_x, num_bits=8):  ##default asym
+#     q_min, q_max = 0, 2.0**num_bits - 1.0
+#     if max_x is None or min_x is None:
+#         max_x, min_x = torch.max(x), torch.min(x)
+#     else:
+#         max_x = torch.max(max_x)
+#         min_x = torch.min(min_x)
+#     scale = (max_x - min_x) / (2**num_bits - 1)
+#     scale = torch.clip(scale, min=1e-5)
+#     bias = torch.round((0 - min_x) / scale)
+#     q_x = torch.round(x / scale + bias)
+#     q_x.clamp_(q_min, q_max)
+#     return scale * (q_x - bias)
 
 
 def quant_dequant_x(x, scale, bias, num_bits=8):  ##default asym

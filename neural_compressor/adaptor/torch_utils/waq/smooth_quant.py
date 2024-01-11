@@ -183,6 +183,7 @@ class TorchSmoothQuant:
         for key in absorb_to_layer.keys():
             layer_name = absorb_to_layer[key][0]
             absorb_to_input_maxes[key] = input_maxes[layer_name]
+
         for index, key in enumerate(absorb_to_layer.keys()):
             alpha_tmp = alpha[key] if isinstance(alpha, dict) else alpha
             layer_names = absorb_to_layer[key]
@@ -190,18 +191,28 @@ class TorchSmoothQuant:
             for layer_name in layer_names:
                 weight = _reshape_in_channel_to_last(layer_name, self.model)
                 weights.append(weight)
-
             weight_max_per_channel = torch.max(torch.abs(torch.cat(weights, dim=0)), dim=0)[0]
 
             weight_max_per_channel = weight_max_per_channel.clamp(min=self.weight_max_lb)
 
+            input_max = absorb_to_input_maxes[key]
+            layer_names = absorb_to_layer[key]
+            weight_scale = cal_scale(input_max, weights, alpha_tmp)
+            if alpha_tmp < 0:
+                weight_scale = torch.ones((1), device=self.device)
+
+            input_scale = 1.0 / weight_scale
+            input_scale[weight_scale == 0] = 0
+
             # the input of layers with same absorb layer is the same.
-            input_minmax = [self.input_mins[layer_names[0]], self.input_maxes[layer_names[0]]]
+            input_minmax = [self.input_mins[layer_names[0]].to("cpu"), self.input_maxes[layer_names[0]].to("cpu")]
             self.max_value_info[key] = {}
             self.max_value_info[key]["alpha"] = alpha_tmp
             self.max_value_info[key]["input_minmax"] = input_minmax
-            self.max_value_info[key]["weight_max"] = weight_max_per_channel
+            self.max_value_info[key]["weight_max"] = weight_max_per_channel.to("cpu")
             self.max_value_info[key]["absorbed_layer"] = layer_names
+            self.max_value_info[key]["sq_input_scale"] = input_scale.to("cpu")
+            self.max_value_info[key]["sq_weight_scale"] = weight_scale.to("cpu")
 
     def _cal_scales(self, absorb_to_layer, input_maxes, alpha=0.5):
         """Cal the adjust scales

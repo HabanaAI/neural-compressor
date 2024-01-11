@@ -51,9 +51,10 @@ class WrapperLayer(torch.nn.Module):
         self.input_min = input_min
         self.act_bits = act_bits
         self.weight_bits = weight_bits
-        self.weight_scale = 1.0
-        self.input_scale = 1.0
+        self.weight_scale = torch.tensor(1.0)
+        self.input_scale = torch.tensor(1.0)
         self.eps = 1e-5
+        self.update_scale(1.0, 1.0)
         # self.eps = torch.finfo(torch.float32).eps
 
     def _calculate_qparams(self, input_min, input_max, input_scale=1.0):
@@ -90,12 +91,14 @@ class WrapperLayer(torch.nn.Module):
     def update_scale(self, input_scale, weight_scale):
         self.q_layer = copy.deepcopy(self.orig_layer)
         self.input_scale = input_scale
+
         self.weight_scale = weight_scale
         self.x_q_scale, self.x_q_zp = self._calculate_qparams(self.input_min, self.input_max, self.input_scale)
         self.q_layer.weight *= weight_scale
         self.w_q_scale = self._get_weight_scale(self.q_layer.weight)
 
         q_dq_weight = quant_dequant_w(self.q_layer.weight, self.w_q_scale, self.weight_bits)
+
         self.q_layer.weight.data.copy_(q_dq_weight)
 
     # def quant_dequant_w(self, weight, scale, zp):
@@ -109,6 +112,7 @@ class WrapperLayer(torch.nn.Module):
     ##TODO better tradeoff performance and memory, currently it's too slow
     def q_dq_forward(self, x):
         x = self.input_scale * x
+        # x = quant_dequant_x(x,max_x = self.input_max*self.input_scale,min_x=self.input_min*self.input_scale)
         x = quant_dequant_x(x, self.x_q_scale, self.x_q_zp, self.act_bits)  ##FIXME
         output = self.q_layer(x)
         return output
@@ -575,7 +579,7 @@ class AutoAlpha:
         assert len(pre_layer_names) == 0, "only support zero len pre block modules currently"  ##TODO handle it later
         if len(block_name_dict) != 0 and self.use_quant_input:
             self.tune_with_quant_input(block_name_dict)
-            self.tune_wo_quant_input([], post_layer_names)
+            self.tune_wo_quant_input([], post_layer_names)  ##TODO
         else:
             self.tune_wo_quant_input(block_name_dict, post_layer_names)
 

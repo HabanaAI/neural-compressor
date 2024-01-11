@@ -31,6 +31,7 @@ from optimum.utils import NormalizedConfigManager
 import numpy as np
 from itertools import chain
 
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 parser = argparse.ArgumentParser()
 parser.add_argument(
     "--model", nargs="?", default="EleutherAI/gpt-j-6B", const="EleutherAI/gpt-j-6B"
@@ -81,7 +82,6 @@ calib_size = 1
 from transformers import BridgeTowerProcessor, BridgeTowerModel
 import requests
 from PIL import Image
-
 
 # def BridgeTowerQfunc(model):
 #     url = "http://images.cocodataset.org/val2017/000000039769.jpg"
@@ -236,8 +236,8 @@ if args.quantize:
             last_ind = []
             for text in batch:
                 input_ids = text["input_ids"]
-                if input_ids.shape[0]< args.pad_max_length:
-                    return None
+                if input_ids.shape[0] < args.pad_max_length:
+                    return None, None
                 pad_len = self.pad_max - input_ids.shape[0]
                 last_ind.append(input_ids.shape[0] - 1)
                 if self.is_calib:
@@ -315,36 +315,36 @@ if args.quantize:
     excluded_precisions = [] if args.int8_bf16_mixed else ["bf16"]
 
     model_sq_max_info, best_min_maxes = None, None
-    if args.sq:
-        import time
-        import pickle
-
-        st = time.time()
-        args.alpha = args.alpha if args.alpha == "auto" else float(args.alpha)
-        recipes = {"smooth_quant": True, "smooth_quant_args": {"alpha": args.alpha, 'folding': False}}
-        print(f'using sq, recipes: {recipes}')
-        recipes = {}
-        from neural_compressor.adaptor.torch_utils.waq import TorchSmoothQuant
-
-        print(f'device: {device}')
-        sq = TorchSmoothQuant(user_model, calib_dataloader)
-        # sq.record_max_info = True
-
-        # smooth quant
-        print('start smoothquant ...')
-        sq_model = sq.transform(alpha="auto", folding=False,
-                                auto_alpha_args={"alpha_min": 0.0, "alpha_max": 1.0, "alpha_step": 0.1,
-                                                 "shared_criterion": "mean"})
-        model_sq_max_info = sq.max_value_info
-        # user_model.save(args.output_dir)
-        print(f'sq running time: {time.time() - st}')
-        os.makedirs(args.output_dir, exist_ok=True)
-        torch.save(user_model, args.output_dir + '/sq_model.bin')
-        pickle.dump(model_sq_max_info, open(args.output_dir + '/sq_max_info.pkl', 'wb'))
-
-        # user_model = torch.load(args.output_dir + '/sq_model.bin')
-        # model_sq_max_info = pickle.load(open(args.output_dir + '/sq_max_info.pkl', 'rb'))
+    # if args.sq:
+    #     import time
+    #     import pickle
     #
+    #     st = time.time()
+    #     args.alpha = args.alpha if args.alpha == "auto" else float(args.alpha)
+    #     recipes = {"smooth_quant": True, "smooth_quant_args": {"alpha": args.alpha, 'folding': False}}
+    #     print(f'using sq, recipes: {recipes}')
+    #     recipes = {}
+    #     from neural_compressor.adaptor.torch_utils.waq import TorchSmoothQuant
+    #
+    #     print(f'device: {device}')
+    #     sq = TorchSmoothQuant(user_model, calib_dataloader)
+    #     # sq.record_max_info = True
+    #
+    #     # smooth quant
+    #     print('start smoothquant ...')
+    #     sq_model = sq.transform(alpha="auto", folding=False,
+    #                             auto_alpha_args={"alpha_min": 0.0, "alpha_max": 1.0, "alpha_step": 0.1,
+    #                                              "shared_criterion": "mean"})
+    #     model_sq_max_info = sq.max_value_info
+    #     # user_model.save(args.output_dir)
+    #     print(f'sq running time: {time.time() - st}')
+    #     os.makedirs(args.output_dir, exist_ok=True)
+    #     torch.save(user_model, args.output_dir + '/sq_model.bin')
+    #     pickle.dump(model_sq_max_info, open(args.output_dir + '/sq_max_info.pkl', 'wb'))
+    #
+    #     # user_model = torch.load(args.output_dir + '/sq_model.bin')
+    #     # model_sq_max_info = pickle.load(open(args.output_dir + '/sq_max_info.pkl', 'rb'))
+    # #
     # if args.tune:
     #     # min max tuning
     #     from quantization.min_max_tuning import MinMaxTuner
@@ -420,24 +420,80 @@ if args.benchmark:
     throughput = total_token_num / total_time
     print("Throughput: {} samples/sec".format(throughput))
 
-# if args.accuracy:
-#     print('start evaluation...')
-#     from llm_eval import evaluate
-#
-#     results = evaluate(
-#         model="hf-causal",
-#         model_args='pretrained=' + args.model + ',tokenizer=' + args.model + ',dtype=float32',
-#         user_model=user_model,
-#         batch_size=args.batch_size,
-#         tasks=args.tasks,
-#         device=device
-#     )
-#     dumped = json.dumps(results, indent=2)
-#     if args.save_accuracy_path:
-#         with open(args.save_accuracy_path, "w") as f:
-#             f.write(dumped)
-#     for task_name in args.tasks:
-#         if task_name == "wikitext":
-#             print("Accuracy for %s is: %s" % (task_name, results["results"][task_name]["word_perplexity"]))
-#         else:
-#             print("Accuracy for %s is: %s" % (task_name, results["results"][task_name]["acc"]))
+eval_naive_int8 = False
+if eval_naive_int8:
+    from neural_compressor.adaptor.torch_utils.waq.calibration import Calibration
+    from neural_compressor.adaptor.torch_utils.waq.auto_alpha_new import WrapperLayer
+    from neural_compressor.adaptor.torch_utils.waq.utils import set_module, get_module
+    from neural_compressor.adaptor.torch_utils.waq import TorchSmoothQuant
+    # sq = TorchSmoothQuant(user_model, calib_dataloader)
+    # ##sq.record_max_info = True
+    #
+    # # smooth quant
+    # print('start smoothquant ...')
+    # sq.transform(alpha=0.5, folding=True, calib_iter=512)
+    calib = Calibration(user_model, dataloder=calib_dataloader, device="cuda:0")
+    input_min, input_maxs = calib.calibrate(512)
+    for key in input_min.keys():
+        module = get_module(user_model, key)
+        new_module = WrapperLayer(module, input_min[key], input_maxs[key])
+        set_module(user_model, key, new_module)
+        new_module.enable_quant()
+eval_sq = True
+if eval_sq:
+    from neural_compressor.adaptor.torch_utils.waq.calibration import Calibration
+    from neural_compressor.adaptor.torch_utils.waq import TorchSmoothQuant
+    from neural_compressor.adaptor.torch_utils.waq.auto_alpha_new import WrapperLayer
+    from neural_compressor.adaptor.torch_utils.waq.utils import set_module, get_module
+
+    print(f'device: {device}')
+    calib = Calibration(user_model, dataloder=calib_dataloader, device="cuda:0")
+    input_min, input_maxs = calib.calibrate(512)
+    sq = TorchSmoothQuant(user_model, calib_dataloader)
+    sq.record_max_info = True
+
+    # smooth quant
+    print('start smoothquant ...')
+    sq.transform(alpha=0.5, folding=False, calib_iter=512)
+    sq_info = sq.max_value_info
+    cnt = 0
+    for key in sq_info.keys():
+        # cnt+=1
+        # if cnt!=25:
+        #     continue
+        layers = sq_info[key]["absorbed_layer"]
+        input_min = sq_info[key]["input_minmax"][0].to(device)
+        input_max = sq_info[key]["input_minmax"][1].to(device)
+        input_scale = sq_info[key]["sq_input_scale"].to(device)
+        weight_scale = sq_info[key]["sq_weight_scale"].to(device)
+        for layer in layers:
+            module = get_module(user_model, layer)
+            new_module = WrapperLayer(module, input_min, input_max)
+            new_module.update_scale(input_scale, weight_scale)
+            new_module.enable_quant()
+            set_module(user_model, key, new_module)
+        #
+        # if cnt == 25:##5 is ok,10 is ok, 15 0.3204, 20 is low 0.1915
+        #     break
+    user_model.to(device)
+
+print('start evaluation...')
+from intel_extension_for_transformers.llm.evaluation.lm_eval import evaluate
+
+results = evaluate(
+    model="hf-causal",
+    model_args='pretrained=' + args.model + ',tokenizer=' + args.model + ',dtype=float32',
+    user_model=user_model,
+    batch_size=32,
+    tasks=args.tasks,
+    device=device
+)
+dumped = json.dumps(results, indent=2)
+if args.save_accuracy_path:
+    with open(args.save_accuracy_path, "w") as f:
+        f.write(dumped)
+for task_name in args.tasks:
+    if task_name == "wikitext":
+        print("Accuracy for %s is: %s" % (task_name, results["results"][task_name]["word_perplexity"]))
+    else:
+        print("Accuracy for %s is: %s" % (task_name, results["results"][task_name]["acc"]))
