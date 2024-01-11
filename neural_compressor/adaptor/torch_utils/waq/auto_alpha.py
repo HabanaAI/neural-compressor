@@ -39,9 +39,29 @@ from .utils import *
 
 
 class AutoAlpha:
-    def __init__(self, model, dataloader, absorb_to_layer, op_types, fp_layers, device, q_func, example_inputs, 
-        weight_clip=True, record_max_info=True, input_maxes={}, input_mins={}, input_maxes_abs={},
-        alpha_min=0.3, alpha_max=0.7, alpha_step=0.1, shared_criterion='mean', init_alpha=0.5, do_blockwise=False, n_samples=32):
+    def __init__(
+        self,
+        model,
+        dataloader,
+        absorb_to_layer,
+        op_types,
+        fp_layers,
+        device,
+        q_func,
+        example_inputs,
+        weight_clip=True,
+        record_max_info=True,
+        input_maxes={},
+        input_mins={},
+        input_maxes_abs={},
+        alpha_min=0.3,
+        alpha_max=0.7,
+        alpha_step=0.1,
+        shared_criterion="mean",
+        init_alpha=0.5,
+        do_blockwise=False,
+        n_samples=32,
+    ):
         """Initialize the AutoAlpha tuner with necessary parameters and components."""
 
         self.model = model.to("cpu")
@@ -52,7 +72,7 @@ class AutoAlpha:
         self.alpha_step = alpha_step
         self.shared_criterion = shared_criterion
         self.init_alpha = init_alpha
-        self.loss_type = 'blockwise' if do_blockwise else 'model_wise'
+        self.loss_type = "blockwise" if do_blockwise else "model_wise"
         self.calib_sample_num = n_samples
         self.op_types = op_types
         self.absorb_to_layer = absorb_to_layer
@@ -66,8 +86,8 @@ class AutoAlpha:
         self.input_mins = input_mins[0] if isinstance(input_mins, tuple) else input_mins
         self.input_maxes_abs = input_maxes_abs if isinstance(input_maxes_abs, tuple) else input_maxes_abs
         self.device = device
-    def tune(self):
 
+    def tune(self):
         scale_memo_use = 0
         for key in self.absorb_to_layer:
             logger.info(key)
@@ -79,7 +99,7 @@ class AutoAlpha:
         scale_memo_use *= alpha_space_len
         self._save_scale = enough_memo_store_scale(self.device, scale_memo_use)
 
-        if self.loss_type == 'blockwise':
+        if self.loss_type == "blockwise":
             self.block_names = self.get_blocks()
             logger.info("Blockwise auto-tuning will be performed")
             module_names = self._get_sq_layer_names()
@@ -100,7 +120,6 @@ class AutoAlpha:
             return self._auto_tune_alpha_blockwise()
         else:
             return self._auto_tune_alpha()
-
 
     def get_blocks(self):
         block_names = []
@@ -130,6 +149,7 @@ class AutoAlpha:
         def save_blockwise_hook(module, inputs, outputs):
             self.block_inputs[name] = inputs[0]
             self.block_outputs[name] = outputs[0]
+
         return save_blockwise_hook
 
     def _get_all_hook_module_names(self):
@@ -713,5 +733,3 @@ def _reshape_in_channel_to_last(layer_name, model):
         weight = weight.permute(0, 2, 3, 1)
         weight = weight.reshape(-1, weight.shape[-1])
     return weight
-
-
