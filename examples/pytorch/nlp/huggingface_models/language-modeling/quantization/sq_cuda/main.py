@@ -471,7 +471,7 @@ if eval_sq:
             new_module = WrapperLayer(module, input_min, input_max)
             new_module.update_scale(input_scale, weight_scale)
             new_module.enable_quant()
-            set_module(user_model, key, new_module)
+            set_module(user_model, layer, new_module)
         #
         # if cnt == 25:##5 is ok,10 is ok, 15 0.3204, 20 is low 0.1915
         #     break
