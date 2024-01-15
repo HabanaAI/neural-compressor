@@ -148,25 +148,42 @@ def move_input_to_device(input, device=torch.device("cpu")):
     return input
 
 
-class SaveBlockInputs:
-    """Cache the inputs of the first block."""
+class SaveInputs:
+    """Cache the inputs of blocks or layers."""
 
-    def __init__(self, model, dataloader, block_name):  ##TODO support qfunc
+    def __init__(self, model, dataloader, block_names, layer_names=[], last_name=None):  ##TODO support qfunc
         """Initializes the SaveInputs class.
 
         Args:
             model: The model to be used.
             dataloader: The dataloader for the input data.
             seqlen (int): The sequence length.
-            block_name (str): The name of the block.
+            block_names (str): The names of the block.
+            layer_names (str): The names of the layer.
+            last_name (str): The name of the last layer or block, an error will be raised after the layer has been forward to save time
         """
         self.model = model.eval()
         self.dataloader = dataloader
-        self.inputs = {}
-        self.block_name = block_name
+        self.block_inputs = {}
+        self.layer_inputs = {}
+        self.block_names = block_names
+        self.layer_names = layer_names
+        self.last_name = last_name
+        if last_name is None and len(block_names) + len(layer_names) == 1:
+            self.last_name = self.block_names[0] if len(block_names) == 1 else self.layer_names[0]
+
+    def get_layer_forward_func(self, name):
+        def forward(_, hidden_states):
+            if name not in self.layer_inputs.keys():
+                self.layer_inputs[name] = []
+            self.layer_inputs[name].append(hidden_states.to("cpu"))
+            if self.last_name is not None and name == self.last_name:
+                raise NotImplementedError
+
+        return forward
 
     @torch.no_grad()
-    def get_forward_func(self, name):
+    def get_block_forward_func(self, name):
         """Gets the forward function.
 
         Args:
@@ -178,42 +195,43 @@ class SaveBlockInputs:
 
         def forward(_, hidden_states, *positional_args, **kwargs):
             dim = int((hasattr(self.model, "config") and "chatglm" in self.model.config.model_type))
-            if name in self.inputs:
-                # data = torch.cat([self.inputs[name]["input_ids"], hidden_states.to("cpu")], dim=dim)
-                self.inputs[name]["input_ids"].append(hidden_states.to("cpu"))
+            if name in self.block_inputs:
+                # data = torch.cat([self.block_inputs[name]["input_ids"], hidden_states.to("cpu")], dim=dim)
+                self.block_inputs[name]["input_ids"].append(hidden_states.to("cpu"))
             else:
-                self.inputs[name] = {}
-                self.inputs[name]["input_ids"] = [hidden_states.to("cpu")]
+                self.block_inputs[name] = {}
+                self.block_inputs[name]["input_ids"] = [hidden_states.to("cpu")]
 
-            if "positional_inputs" not in self.inputs[name]:
-                self.inputs[name]["positional_inputs"] = []
+            if "positional_inputs" not in self.block_inputs[name]:
+                self.block_inputs[name]["positional_inputs"] = []
             for idx, item in enumerate(positional_args):
-                self.inputs[name]["positional_inputs"] = move_input_to_device(positional_args)
+                self.block_inputs[name]["positional_inputs"] = move_input_to_device(positional_args)
 
             for key in kwargs.keys():
                 if isinstance(kwargs[key], torch.Tensor) or isinstance(kwargs[key], list) or (key == "alibi"):
                     if "attention_mask" in key:
-                        if key not in self.inputs[name].keys():
-                            self.inputs[name][key] = []
+                        if key not in self.block_inputs[name].keys():
+                            self.block_inputs[name][key] = []
                         if kwargs[key] is not None:
-                            if self.inputs[name][key] is not None:
-                                self.inputs[name][key].append(kwargs[key].to("cpu"))
+                            if self.block_inputs[name][key] is not None:
+                                self.block_inputs[name][key].append(kwargs[key].to("cpu"))
                             else:
-                                self.inputs[name][key] = [kwargs[key].to("cpu")]
+                                self.block_inputs[name][key] = [kwargs[key].to("cpu")]
                     elif "alibi" in key:
-                        if key not in self.inputs[name].keys():
-                            self.inputs[name][key] = None
+                        if key not in self.block_inputs[name].keys():
+                            self.block_inputs[name][key] = None
                         if isinstance(kwargs[key], torch.Tensor):
                             alibi = kwargs[key]
                             batch = kwargs["attention_mask"].shape[0]
                             alibi = alibi.reshape(batch, -1, alibi.shape[1], alibi.shape[2])
-                            if self.inputs[name][key] is not None:
-                                self.inputs[name][key].append(alibi.to("cpu"))
+                            if self.block_inputs[name][key] is not None:
+                                self.block_inputs[name][key].append(alibi.to("cpu"))
                             else:
-                                self.inputs[name][key] = [alibi.to("cpu")]
-                    elif key not in self.inputs[name].keys():
-                        self.inputs[name][key] = move_input_to_device(kwargs[key], device=torch.device("cpu"))
-            raise NotImplementedError
+                                self.block_inputs[name][key] = [alibi.to("cpu")]
+                    elif key not in self.block_inputs[name].keys():
+                        self.block_inputs[name][key] = move_input_to_device(kwargs[key], device=torch.device("cpu"))
+            if self.last_name is not None and name == self.last_name:
+                raise NotImplementedError
 
         return forward
 
@@ -234,6 +252,8 @@ class SaveBlockInputs:
                 continue
             if isinstance(data, tuple) or isinstance(data, list):
                 data = data[0]
+            if data is None:
+                continue
             if isinstance(data, torch.Tensor):
                 input_ids = data.to(self.model.device)
             else:
@@ -261,31 +281,43 @@ class SaveBlockInputs:
                 f"Insufficient number of samples collected may affect the quantification. "
                 f"Effective samples size:{total_cnt}, Target sample size:{n_samples}"
             )
-        res = self.inputs[self.block_name]
-        if "input_ids" in res.keys():
-            total_samples = 0
-            for item in res["input_ids"]:
-                total_samples += item.shape[0]
+        if len(self.block_names) != 0:
+            res = self.block_inputs[self.block_names[0]]
+            if "input_ids" in res.keys():
+                total_samples = 0
+                for item in res["input_ids"]:
+                    total_samples += item.shape[0]
+                if total_samples < n_samples:
+                    logger.warning("only cache {total_samples}")
+        elif len(self.layer_names) != 0:
+            res = self.layer_inputs[self.layer_names[0]]
+            total_samples = len(res)
             if total_samples < n_samples:
                 logger.warning("only cache {total_samples}")
 
-        return res
+        return self.block_inputs, self.layer_inputs
 
     def _recover_forward(self):
         """Recovers the forward function."""
-        for n, m in self.model.named_modules():
-            if n == self.block_name:
-                m.forward = m.orig_forward
-                delattr(m, "orig_forward")
-                break
+        for n in self.block_names:
+            m = get_module(self.model, n)
+            m.forward = m.orig_forward
+            delattr(m, "orig_forward")
+        for n in self.layer_names:
+            m = get_module(self.model, n)
+            m.forward = m.orig_forward
+            delattr(m, "orig_forward")
 
     def _replace_forward(self):
         """Replaces the forward function."""
-        for n, m in self.model.named_modules():
-            if n == self.block_name:
-                m.orig_forward = m.forward
-                m.forward = partial(self.get_forward_func(n), m)
-                break
+        for n in self.block_names:
+            m = get_module(self.model, n)
+            m.orig_forward = m.forward
+            m.forward = partial(self.get_block_forward_func(n), m)
+        for n in self.layer_names:
+            m = get_module(self.model, n)
+            m.orig_forward = m
+            m.forward = partial(self.get_layer_forward_func(n), m)
 
 
 def block_forward(block, input_ids, input_others, amp=False, amp_dtype=torch.float16, device=torch.device("cpu")):
@@ -407,10 +439,10 @@ class AutoAlpha:
         self.act_bits = act_bits
         self.w_bits = w_bits
 
-    def save_block_input(self, block_name):
-        save_input = SaveBlockInputs(self.model, self.dataloader, block_name)
-        first_block_inputs = save_input.get_inputs(self.n_samples)
-        return first_block_inputs
+    def save_inputs(self, block_names, layer_names=[], last_name=None):
+        save_input = SaveInputs(self.model, self.dataloader, block_names, layer_names, last_name)
+        block_inputs, layer_inputs = save_input.get_inputs(self.n_samples)
+        return block_inputs, layer_inputs
 
     def _get_quant_layer_names(self, op_types, fp_layers):
         quant_layers = []
@@ -471,9 +503,10 @@ class AutoAlpha:
             module.update_scale(best_input_scale, best_weight_scale)
             module.enable_quant()
 
-    def tune_single_block(self, block_name_mapping_layers, input_ids, input_others, quant_input_ids):  ##block_loss
+    def tune_single_block(self, block_name_mapping_layers, input_ids, input_others, quant_input_ids=None):  ##block_loss
         ##module {block_name:[q,k,v],[fc1,][fc2]}
         ##calibration
+        enable_quant_input = False if quant_input_ids is None else True
         block_name = block_name_mapping_layers[0]
         ordered_layers_list = block_name_mapping_layers[1]
         block = get_module(self.model, block_name)
@@ -481,7 +514,7 @@ class AutoAlpha:
         from .calibration import Calibration
 
         calib = Calibration(block, dataloder=None, q_func=self.block_qfunc)
-        self.q_func_input_ids = quant_input_ids
+        self.q_func_input_ids = quant_input_ids if enable_quant_input else input_ids
         self.q_func_input_others = input_others
         input_mins, input_maxes = calib.calibrate(-1)
         ##wrapper layers
@@ -490,7 +523,6 @@ class AutoAlpha:
                 continue
             new_layer = WrapperLayer(m, input_mins[n], input_maxes[n], self.act_bits, self.w_bits)
             set_module(block, n, new_layer)
-        ##for each layer group, tune
 
         fp_output_ids = self.block_forward_whole_input(
             block, input_ids, input_others
@@ -499,8 +531,10 @@ class AutoAlpha:
             self.tune_group_layers_with_block_loss(
                 group, block, fp_output_ids, input_ids, input_others, quant_input_ids
             )
-
-        q_output_ids = self.block_forward_whole_input(block, input_ids, input_others)
+        if enable_quant_input:
+            q_output_ids = self.block_forward_whole_input(block, input_ids, input_others)
+        else:
+            q_output_ids = None
         block.to("cpu")
         return fp_output_ids, q_output_ids
 
@@ -550,12 +584,20 @@ class AutoAlpha:
         #         device=self.device,
         #     )
 
-    def tune_with_quant_input(self, block_name_dict):
+    def tune_blocks_with_quant_input(self, block_name_dict):
+        """
+
+        Args:
+            block_name_dict: {"block_name":[[q,k,v],fc1,fc2]}
+
+        Returns:
+
+        """
         first_block_name = None
         for key in block_name_dict.keys():
             first_block_name = key
             break
-        block_inputs = self.save_block_input(first_block_name)
+        block_inputs, _ = self.save_inputs(first_block_name)
         input_ids = block_inputs["input_ids"]
         block_inputs.pop("input_ids")
         input_others = block_inputs
@@ -567,8 +609,53 @@ class AutoAlpha:
             tmp = 1
             ##TODO reset the block_inputs
 
+    def tune_blocks_wo_quant_input(self, block_name_dict, block_inputs):
+        for key in block_name_dict.keys():
+            block_name_mapping_layers = block_name_dict[key]
+            block_input = block_inputs[key]
+            input_ids = block_input["input_ids"]
+            block_input.pop("input_ids")
+            input_others = block_input
+            self.tune_single_block(block_name_mapping_layers, input_ids, input_others, None)
+
+    def tune_group_layers_wo_quant_input(self, layers, inputs):
+        ## TODO should support conv1d, fc, conv2d
+        """
+        the layers should share the same input
+        Args:
+            layers:
+            input:
+
+        Returns:
+
+        """
+        inputs_min = torch.min(inputs[0].reshape[-1, inputs[0].shape[-1]], dim=0)[0]
+        inputs_max = torch.max(inputs[0].reshape[-1, inputs[0].shape[-1]], dim=0)[0]
+        for input in inputs:
+            reshape_input = input.reshape[-1, input.shape[-1]]
+            inputs_min = torch.minimum(inputs_min, torch.min(reshape_input, dim=0)[0])
+            inputs_max = torch.maximum(inputs_max, torch.min(reshape_input, dim=0)[0])
+        ##TODO
+
+        tmp = 1
+
     def tune_wo_quant_input(self, block_names, layer_names):
-        pass
+        """
+
+        Args:
+            block_names:
+            layer_names: list of list
+
+        Returns:
+
+        """
+        tmp_layer_names = []
+        for layer_name_l in layer_names:
+            tmp_layer_names.append(layer_name_l[0])
+        block_inputs, layer_inputs = self.save_inputs(block_names, tmp_layer_names)
+        for layer_name_l in layer_names:
+            self.tune_group_layers_wo_quant_input(layer_name_l, layer_inputs[layer_name_l[0]])
+        tmp = 1
 
     @torch.no_grad()
     def tune(self):
@@ -578,8 +665,9 @@ class AutoAlpha:
         )  ##TODO there are bug for multimodal model
         assert len(pre_layer_names) == 0, "only support zero len pre block modules currently"  ##TODO handle it later
         if len(block_name_dict) != 0 and self.use_quant_input:
-            self.tune_with_quant_input(block_name_dict)
-            self.tune_wo_quant_input([], post_layer_names)  ##TODO
+            self.tune_wo_quant_input([], post_layer_names)  ## TODO exchange
+            # self.tune_with_quant_input(block_name_dict)
+
         else:
             self.tune_wo_quant_input(block_name_dict, post_layer_names)
 
