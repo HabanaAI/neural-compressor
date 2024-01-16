@@ -440,54 +440,23 @@ class TorchSmoothQuant:
             logger.warning("empty absorb_to_layer, smoothquant is ignored ")
             return self.model
         example_inputs = self._get_example_input()
-        autotune_version = "new"
+        autotune_version = "original"
         if alpha == "auto":  ##TODO need to polish later
-            if autotune_version == "new":
-                from .auto_alpha_new import AutoAlpha
+            from .utils import TUNERS
 
-                auto_alpha_args.pop("version")
-                auto_alpha = AutoAlpha(
-                    self.model,
-                    self.dataloader,
-                    self.absorb_to_layer,
-                    op_types=[torch.nn.Linear],
-                    fp_layers=[],
-                    device=self.device,
-                    q_func=self.q_func,
-                    example_inputs=self.example_inputs,
-                    **auto_alpha_args,
-                )
-                auto_alpha.tune()
-            elif autotune_version == "original":
-                calib = Calibration(self.model, self.dataloader, self.q_func, self.device)
-                self.input_mins, self.input_maxes = calib.calibrate(calib_iter, op_types)
-                input_maxes_abs = {}
-                for key in self.input_mins.keys():
-                    input_maxes_abs[key] = torch.max(torch.abs(self.input_mins[key]), torch.abs(self.input_maxes[key]))
-                from .auto_alpha import AutoAlpha
-
-                logger.info("auto tune alpha using original tuning method")
-                kwargs = dict(
-                    record_max_info=self.record_max_info,
-                    weight_clip=weight_clip,
-                    input_maxes=self.input_maxes,
-                    input_mins=self.input_mins,
-                    input_maxes_abs=input_maxes_abs,
-                    n_samples=32,
-                )
-                auto_alpha_args.update(kwargs)
-                auto_alpha = AutoAlpha(
-                    self.model,
-                    self.dataloader,
-                    self.absorb_to_layer,
-                    op_types=[torch.nn.Linear],
-                    fp_layers=[],
-                    device=self.device,
-                    q_func=self.q_func,
-                    example_inputs=self.example_inputs,
-                    **auto_alpha_args,
-                )
-                alpha = auto_alpha.tune()
+            auto_alpha_version = "version1"
+            auto_alpha = TUNERS[auto_alpha_version](
+                self.model,
+                self.dataloader,
+                self.absorb_to_layer,
+                op_types=[torch.nn.Linear],
+                fp_layers=[],
+                device=self.device,
+                q_func=self.q_func,
+                example_inputs=self.example_inputs,
+                **auto_alpha_args,
+            )
+            alpha = auto_alpha.tune()
 
         elif need_calibration:
             calib = Calibration(self.model, self.dataloader, self.q_func, self.device)
