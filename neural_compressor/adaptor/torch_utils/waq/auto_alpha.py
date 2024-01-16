@@ -35,8 +35,9 @@ except:
 import numpy
 from tqdm import tqdm
 
-from .utils import *
 from .calibration import Calibration
+from .utils import *
+
 
 @register_autotune("version1")
 class AutoAlpha:
@@ -87,8 +88,7 @@ class AutoAlpha:
 
     def tune(self):
         """The main entry of auto_alpha
-        :return: Optimal alpha values and scales based on user-defined recipes.
-        """
+        :return: Optimal alpha values and scales based on user-defined recipes."""
         calib = Calibration(self.model, self.dataloader, self.q_func, self.device)
         self.input_mins, self.input_maxes = calib.calibrate(calib_iter, op_types)
         input_maxes_abs = {}
@@ -309,7 +309,10 @@ class AutoAlpha:
 
     def _get_best_alpha(self, absorb_to_layer, loss_alphas, shared_criterion):
         """Obtain the optimal alpha values based on shared criterion and loss values recorded in auto-tuning step.
-        :return: A dict of layerwise alpha values."""
+
+        :return: A dict of layerwise alpha values.
+        """
+
         def dict_to_list(dic):
             res = []
             for key in dic.keys():
@@ -351,7 +354,9 @@ class AutoAlpha:
 
     def _get_one_batch_auto_loss(self, input, alpha_space, orig_best_alpha, input_maxes):
         """Calculate the losses for all alpha values given an input.
-        :return: A dict of op-wise loss values with respect to alpha values."""
+
+        :return: A dict of op-wise loss values with respect to alpha values.
+        """
         self._change_qdq_for_auto(enable=False)
         module_names = self._get_sq_layer_names()
 
@@ -402,7 +407,9 @@ class AutoAlpha:
 
     def _get_one_batch_auto_loss_blockwise(self, input, alpha_space, orig_best_alpha, input_maxes):
         """Calculate the losses for all alpha values given an input in blockwise tuning mode.
-        :return: A dict of blockwise-wise loss values with respect to alpha values."""
+
+        :return: A dict of blockwise-wise loss values with respect to alpha values.
+        """
         self._change_qdq_for_auto(enable=False)
         module_names = self._get_sq_layer_names()
 
@@ -478,7 +485,9 @@ class AutoAlpha:
 
     def opwise_rank(self, loss_alphas, best_alphas):
         """Rank the final losses of ops based on their ratio with respect to op output norm.
-        :return:"""
+
+        :return:
+        """
         max_op, max_ratio, max_key = "", 0, ""
         ratio_info = {}
         for key in self.absorb_to_layer:
@@ -510,7 +519,9 @@ class AutoAlpha:
 
     def default_tune_setup(self):
         """Setup default auto-tune settings.
-        :return: A dict of op-wise loss values with respect to alpha values."""
+
+        :return: A dict of op-wise loss values with respect to alpha values.
+        """
         round_num = max(  # Initialize the alpha search space
             len(str(self.alpha_min).split(".")[1]),
             len(str(self.alpha_max).split(".")[1]),
@@ -741,4 +752,3 @@ class AutoAlpha:
         logger.info("block-wise auto tuning done")
 
         return best_alphas
-

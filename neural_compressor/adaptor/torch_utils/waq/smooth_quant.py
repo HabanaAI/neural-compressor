@@ -443,7 +443,8 @@ class TorchSmoothQuant:
         autotune_version = "original"
         if alpha == "auto":  ##TODO need to polish later
             from .utils import TUNERS
-            auto_alpha_version = 'version1'
+
+            auto_alpha_version = "version1"
             auto_alpha = TUNERS[auto_alpha_version](
                 self.model,
                 self.dataloader,
@@ -456,7 +457,6 @@ class TorchSmoothQuant:
                 **auto_alpha_args,
             )
             alpha = auto_alpha.tune()
-
 
         elif need_calibration:
             calib = Calibration(self.model, self.dataloader, self.q_func, self.device)
