@@ -454,13 +454,10 @@ if eval_sq:
 
     # smooth quant
     print('start smoothquant ...')
-    sq.transform(alpha=0.5, folding=False, calib_iter=512)
+    sq.transform(alpha="auto", folding=False, calib_iter=512)
     sq_info = sq.max_value_info
     cnt = 0
     for key in sq_info.keys():
-        # cnt+=1
-        # if cnt!=25:
-        #     continue
         layers = sq_info[key]["absorbed_layer"]
         input_min = sq_info[key]["input_minmax"][0].to(device)
         input_max = sq_info[key]["input_minmax"][1].to(device)
@@ -472,9 +469,6 @@ if eval_sq:
             new_module.update_scale(input_scale, weight_scale)
             new_module.enable_quant()
             set_module(user_model, layer, new_module)
-        #
-        # if cnt == 25:##5 is ok,10 is ok, 15 0.3204, 20 is low 0.1915
-        #     break
     user_model.to(device)
 
 print('start evaluation...')

@@ -440,11 +440,12 @@ class TorchSmoothQuant:
             logger.warning("empty absorb_to_layer, smoothquant is ignored ")
             return self.model
         example_inputs = self._get_example_input()
-        autotune_version = "original"
+        autotune_version = "new"
         if alpha == "auto":  ##TODO need to polish later
             if autotune_version == "new":
                 from .auto_alpha_new import AutoAlpha
 
+                auto_alpha_args.pop("version")
                 auto_alpha = AutoAlpha(
                     self.model,
                     self.dataloader,

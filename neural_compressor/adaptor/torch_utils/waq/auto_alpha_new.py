@@ -232,6 +232,8 @@ class SaveInputs:
                         self.block_inputs[name][key] = move_input_to_device(kwargs[key], device=torch.device("cpu"))
             if self.last_name is not None and name == self.last_name:
                 raise NotImplementedError
+            m = get_module(name)
+            return m.orig_forward(hidden_states, *positional_args, **kwargs)
 
         return forward
 
@@ -316,7 +318,7 @@ class SaveInputs:
             m.forward = partial(self.get_block_forward_func(n), m)
         for n in self.layer_names:
             m = get_module(self.model, n)
-            m.orig_forward = m
+            m.orig_forward = m.forward
             m.forward = partial(self.get_layer_forward_func(n), m)
 
 
@@ -593,11 +595,19 @@ class AutoAlpha:
         Returns:
 
         """
-        first_block_name = None
+        # first_block_name = None
+        # for key in block_name_dict.keys():
+        #     first_block_name = key
+        #     break
+        # block_inputs, _ = self.save_inputs(first_block_name)
+
+        test_block_names = []
         for key in block_name_dict.keys():
-            first_block_name = key
-            break
-        block_inputs, _ = self.save_inputs(first_block_name)
+            test_block_names.append(key)
+            if len(test_block_names) == 2:
+                break
+        block_inputs, _ = self.save_inputs(test_block_names)
+
         input_ids = block_inputs["input_ids"]
         block_inputs.pop("input_ids")
         input_others = block_inputs
@@ -624,7 +634,7 @@ class AutoAlpha:
         the layers should share the same input
         Args:
             layers:
-            input:
+            input: list of input
 
         Returns:
 
@@ -665,8 +675,8 @@ class AutoAlpha:
         )  ##TODO there are bug for multimodal model
         assert len(pre_layer_names) == 0, "only support zero len pre block modules currently"  ##TODO handle it later
         if len(block_name_dict) != 0 and self.use_quant_input:
+            self.tune_blocks_with_quant_input(block_name_dict)
             self.tune_wo_quant_input([], post_layer_names)  ## TODO exchange
-            # self.tune_with_quant_input(block_name_dict)
 
         else:
             self.tune_wo_quant_input(block_name_dict, post_layer_names)
@@ -677,7 +687,7 @@ class AutoAlpha:
         model = get_module(name)
 
     def _parse_module_info(self, model):
-        """Parses the module in pre/in/post blocks and returns the quantized modules for each block.
+        """Parses the module in pre/in/post blocks and returns the to-quantized modules for each block.
 
         Args:
             model: The input model to parse.
@@ -768,7 +778,7 @@ class AutoAlpha:
             if n in self.quant_layers:
                 m.name = n
 
-    def _get_ordered_module(self):
+    def _get_ordered_module(self):  ##This will bug for moe models
         hook_handles = []
         for n, m in self.model.named_modules():
             if n in self.quant_layers:
