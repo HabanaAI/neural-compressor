@@ -35,7 +35,6 @@ from collections import UserDict, defaultdict
 import numpy
 from tqdm import tqdm
 
-from .auto_alpha import _reshape_in_channel_to_last
 from .calibration import Calibration
 from .graph_trace import GraphTrace
 from .utils import *
@@ -189,7 +188,7 @@ class TorchSmoothQuant:
             layer_names = absorb_to_layer[key]
             weights = []
             for layer_name in layer_names:
-                weight = _reshape_in_channel_to_last(layer_name, self.model)
+                weight = reshape_in_channel_to_last(layer_name, self.model)
                 weights.append(weight)
             weight_max_per_channel = torch.max(torch.abs(torch.cat(weights, dim=0)), dim=0)[0]
 
@@ -236,7 +235,7 @@ class TorchSmoothQuant:
                 layer_names = absorb_to_layer[key]
                 weights = []
                 for layer_name in layer_names:
-                    weight = _reshape_in_channel_to_last(layer_name, self.model)
+                    weight = reshape_in_channel_to_last(layer_name, self.model)
                     weights.append(weight)
                 scale = cal_scale(input_max, weights, alpha_tmp)
             absorb_scales_info[key] = 1.0 / scale
@@ -440,7 +439,6 @@ class TorchSmoothQuant:
             logger.warning("empty absorb_to_layer, smoothquant is ignored ")
             return self.model
         example_inputs = self._get_example_input()
-        autotune_version = "original"
         if alpha == "auto":  ##TODO need to polish later
             from .utils import TUNERS
 

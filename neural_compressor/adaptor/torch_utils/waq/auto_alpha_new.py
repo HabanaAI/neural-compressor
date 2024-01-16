@@ -370,6 +370,7 @@ def block_forward(block, input_ids, input_others, amp=False, amp_dtype=torch.flo
     return output
 
 
+@register_autotune("version2")
 class AutoAlpha:
     def __init__(
         self,
