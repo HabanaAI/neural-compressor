@@ -36,8 +36,9 @@ import numpy
 from tqdm import tqdm
 
 from .utils import *
+from .calibration import Calibration
 
-
+@register_autotune("version1")
 class AutoAlpha:
     def __init__(
         self,
@@ -51,9 +52,6 @@ class AutoAlpha:
         example_inputs,
         weight_clip=True,
         record_max_info=True,
-        input_maxes={},
-        input_mins={},
-        input_maxes_abs={},
         alpha_min=0.3,
         alpha_max=0.7,
         alpha_step=0.1,
@@ -82,12 +80,21 @@ class AutoAlpha:
         self.max_value_info = {}  # to record max values for alpha tune
         self.record_max_info = record_max_info[0] if isinstance(record_max_info, tuple) else record_max_info
         self.weight_clip = weight_clip[0] if isinstance(weight_clip, tuple) else weight_clip
-        self.input_maxes = input_maxes[0] if isinstance(input_maxes, tuple) else input_maxes
-        self.input_mins = input_mins[0] if isinstance(input_mins, tuple) else input_mins
-        self.input_maxes_abs = input_maxes_abs if isinstance(input_maxes_abs, tuple) else input_maxes_abs
+        self.input_maxes = {}
+        self.input_mins = {}
+        self.input_maxes_abs = {}
         self.device = device
 
     def tune(self):
+        """The main entry of auto_alpha
+        :return: Optimal alpha values and scales based on user-defined recipes.
+        """
+        calib = Calibration(self.model, self.dataloader, self.q_func, self.device)
+        self.input_mins, self.input_maxes = calib.calibrate(calib_iter, op_types)
+        input_maxes_abs = {}
+        for key in self.input_mins.keys():
+            input_maxes_abs[key] = torch.max(torch.abs(self.input_mins[key]), torch.abs(self.input_maxes[key]))
+
         scale_memo_use = 0
         for key in self.absorb_to_layer:
             logger.info(key)
@@ -122,6 +129,7 @@ class AutoAlpha:
             return self._auto_tune_alpha()
 
     def get_blocks(self):
+        """Obtain a list of blocks in block-wise tuning mode."""
         block_names = []
         for n, m in self.model.named_modules():
             if hasattr(type(m), "__name__") and "ModuleList" in type(m).__name__:
@@ -153,6 +161,7 @@ class AutoAlpha:
         return save_blockwise_hook
 
     def _get_all_hook_module_names(self):
+        """Obtain all the modules that could be hooked based on given op_types."""
         module_names = []
         for n, module in self.model.named_modules():
             if isinstance(module, tuple(self.op_types)):
@@ -160,6 +169,7 @@ class AutoAlpha:
         return module_names
 
     def _update_scales_for_auto(self, absorb_scales, weight_scales):
+        """Apply activation and weight scales to the model."""
         for key in self.absorb_to_layer.keys():
             layer_names = self.absorb_to_layer[key]
             for layer_name in layer_names:
@@ -171,6 +181,7 @@ class AutoAlpha:
                 layer.update_scale(input_scale, weight_scale)  ##FIXME
 
     def _change_qdq_for_auto(self, enable=True):
+        """Change the option for qdq."""
         module_names = self._get_all_hook_module_names()
         for name in module_names:
             name = name.split(".orig_layer")[0]
@@ -195,6 +206,8 @@ class AutoAlpha:
             set_module(self.model, name, new_module)
 
     def _qdq_model_unwrapper_for_auto(self):
+        """Unwrapper all the module with qdq
+        :return:"""
         module_names = self.to_unwrap_module_names
         for name in module_names:
             module = get_module(self.model, name)
@@ -224,7 +237,7 @@ class AutoAlpha:
                 layer_names = absorb_to_layer[key]
                 weights = []
                 for layer_name in layer_names:
-                    weight = _reshape_in_channel_to_last(layer_name, self.model)
+                    weight = reshape_in_channel_to_last(layer_name, self.model)
                     weights.append(weight)
 
                 weight_max_per_channel = torch.max(torch.abs(torch.cat(weights, dim=0)), dim=0)[0]
@@ -295,6 +308,8 @@ class AutoAlpha:
         return module_names
 
     def _get_best_alpha(self, absorb_to_layer, loss_alphas, shared_criterion):
+        """Obtain the optimal alpha values based on shared criterion and loss values recorded in auto-tuning step.
+        :return: A dict of layerwise alpha values."""
         def dict_to_list(dic):
             res = []
             for key in dic.keys():
@@ -335,6 +350,8 @@ class AutoAlpha:
         return best_alpha
 
     def _get_one_batch_auto_loss(self, input, alpha_space, orig_best_alpha, input_maxes):
+        """Calculate the losses for all alpha values given an input.
+        :return: A dict of op-wise loss values with respect to alpha values."""
         self._change_qdq_for_auto(enable=False)
         module_names = self._get_sq_layer_names()
 
@@ -384,6 +401,8 @@ class AutoAlpha:
         return loss_alphas
 
     def _get_one_batch_auto_loss_blockwise(self, input, alpha_space, orig_best_alpha, input_maxes):
+        """Calculate the losses for all alpha values given an input in blockwise tuning mode.
+        :return: A dict of blockwise-wise loss values with respect to alpha values."""
         self._change_qdq_for_auto(enable=False)
         module_names = self._get_sq_layer_names()
 
@@ -458,6 +477,8 @@ class AutoAlpha:
         return loss_alphas
 
     def opwise_rank(self, loss_alphas, best_alphas):
+        """Rank the final losses of ops based on their ratio with respect to op output norm.
+        :return:"""
         max_op, max_ratio, max_key = "", 0, ""
         ratio_info = {}
         for key in self.absorb_to_layer:
@@ -488,6 +509,8 @@ class AutoAlpha:
         return None
 
     def default_tune_setup(self):
+        """Setup default auto-tune settings.
+        :return: A dict of op-wise loss values with respect to alpha values."""
         round_num = max(  # Initialize the alpha search space
             len(str(self.alpha_min).split(".")[1]),
             len(str(self.alpha_max).split(".")[1]),
@@ -719,17 +742,3 @@ class AutoAlpha:
 
         return best_alphas
 
-
-def _reshape_in_channel_to_last(layer_name, model):
-    """Move the input channel to the last dim
-    :param layer_name: Layer name
-    :return: The reshaped weight."""
-    layer = get_module(model, layer_name)
-    if layer.__class__.__name__ == "WrapperLayer":
-        layer = layer.orig_layer
-
-    weight = layer.weight  ##TODO oc*ic, support transposed conv
-    if len(weight.shape) == 4:
-        weight = weight.permute(0, 2, 3, 1)
-        weight = weight.reshape(-1, weight.shape[-1])
-    return weight

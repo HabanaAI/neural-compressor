@@ -409,3 +409,17 @@ def reshape_scale_as_weight(layer, scale):
         scale = scale.view(1, scale.shape[0])
 
     return scale
+
+
+TUNERS = {}
+
+def register_autotune(name):
+    """Class decorator to register a smoothquant auto-tune subclass.
+    :return: the class of register
+    """
+
+    def register(auto_tune):
+        TUNERS[name] = auto_tune
+        return auto_tune
+
+    return register
