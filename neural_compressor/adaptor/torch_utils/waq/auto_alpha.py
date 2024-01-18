@@ -90,16 +90,14 @@ class AutoAlpha:
         """The main entry of auto_alpha
         :return: Optimal alpha values and scales based on user-defined recipes."""
         calib = Calibration(self.model, self.dataloader, self.q_func, self.device)
-        self.input_mins, self.input_maxes = calib.calibrate(calib_iter, op_types)
-        input_maxes_abs = {}
+        calib_iter = 100
+        self.input_mins, self.input_maxes = calib.calibrate(calib_iter, self.op_types)
         for key in self.input_mins.keys():
-            input_maxes_abs[key] = torch.max(torch.abs(self.input_mins[key]), torch.abs(self.input_maxes[key]))
+            self.input_maxes_abs[key] = torch.max(torch.abs(self.input_mins[key]), torch.abs(self.input_maxes[key]))
 
         scale_memo_use = 0
         for key in self.absorb_to_layer:
-            logger.info(key)
             layer_name = self.absorb_to_layer[key][0]
-            logger.info(layer_name)
             input_max = self.input_maxes_abs[layer_name]
             scale_memo_use += 4 * input_max.shape[0] * len(self.absorb_to_layer[key])
         alpha_space_len = (self.alpha_max - self.alpha_min) / self.alpha_step + 1
@@ -560,77 +558,42 @@ class AutoAlpha:
             self._qdq_model_unwrapper_for_auto()
             return best_alphas
         bar = tqdm(self.dataloader, total=self.calib_sample_num, desc="auto tune alpha")
-        try:
-            for input, label in bar:
-                loss_alphas = {}
-                best_alphas_per_module = best_alphas
-                if isinstance(best_alphas, dict):
-                    for key in self.absorb_to_layer.keys():
-                        layer_names = self.absorb_to_layer[key]
-                        for layer_name in layer_names:
-                            best_alphas_per_module[layer_name] = best_alphas_per_module[key]
-                loss_tmp = self._get_one_batch_auto_loss(
-                    input, self.alpha_space, best_alphas_per_module, self.input_maxes_abs
+        for input in bar:
+            if isinstance(input, tuple): # Extract input when both input and label are yielded by dataloader.
+                input = input[0]
+            loss_alphas = {}
+            best_alphas_per_module = best_alphas
+            if isinstance(best_alphas, dict):
+                for key in self.absorb_to_layer.keys():
+                    layer_names = self.absorb_to_layer[key]
+                    for layer_name in layer_names:
+                        best_alphas_per_module[layer_name] = best_alphas_per_module[key]
+            loss_tmp = self._get_one_batch_auto_loss(
+                input, self.alpha_space, best_alphas_per_module, self.input_maxes_abs
+            )
+            if loss_alphas == {}:
+                loss_alphas = loss_tmp
+            else:
+                for key in loss_alphas.keys():
+                    cur_loss = loss_alphas[key]
+                    for alpha_key in cur_loss.keys():
+                        cur_loss[alpha_key] += loss_tmp[key][alpha_key]
+            total_cnt += self.dataloader.batch_size
+            tmp_cnt += self.dataloader.batch_size
+            if tmp_cnt // multiply_factor >= 1:
+                alpha_update_iter += 1
+                tmp_cnt = 0
+                best_alphas = self._get_best_alpha(self.absorb_to_layer, loss_alphas, self.shared_criterion)
+                for key in best_alphas.keys():
+                    logger.info(f"Auto alpha update iter: {alpha_update_iter}, {key}: {best_alphas[key]}")
+                absorb_input_scales, weight_scales = self._cal_scales(
+                    self.absorb_to_layer, self.input_maxes_abs, best_alphas, tuning=True
                 )
-                if loss_alphas == {}:
-                    loss_alphas = loss_tmp
-                else:
-                    for key in loss_alphas.keys():
-                        cur_loss = loss_alphas[key]
-                        for alpha_key in cur_loss.keys():
-                            cur_loss[alpha_key] += loss_tmp[key][alpha_key]
-                total_cnt += self.dataloader.batch_size
-                tmp_cnt += self.dataloader.batch_size
-                if tmp_cnt // multiply_factor >= 1:
-                    alpha_update_iter += 1
-                    tmp_cnt = 0
-                    best_alphas = self._get_best_alpha(self.absorb_to_layer, loss_alphas, self.shared_criterion)
-                    for key in best_alphas.keys():
-                        logger.info(f"Auto alpha update iter: {alpha_update_iter}, {key}: {best_alphas[key]}")
-                    absorb_input_scales, weight_scales = self._cal_scales(
-                        self.absorb_to_layer, self.input_maxes_abs, best_alphas, tuning=True
-                    )
-                    self._update_scales_for_auto(absorb_input_scales, weight_scales)
-                    # does not need to reset the weight_scale_dict, because use the weight of ori_layer, no change
-                    # self.weight_scale_dict = {}
-                if total_cnt >= self.calib_sample_num:
-                    break
-        except:
-            for input in bar:
-                loss_alphas = {}
-                best_alphas_per_module = best_alphas
-                if isinstance(best_alphas, dict):
-                    for key in self.absorb_to_layer.keys():
-                        layer_names = self.absorb_to_layer[key]
-                        for layer_name in layer_names:
-                            best_alphas_per_module[layer_name] = best_alphas_per_module[key]
-
-                loss_tmp = self._get_one_batch_auto_loss(
-                    input, self.alpha_space, best_alphas_per_module, self.input_maxes_abs
-                )
-                if loss_alphas == {}:
-                    loss_alphas = loss_tmp
-                else:
-                    for key in loss_alphas.keys():
-                        cur_loss = loss_alphas[key]
-                        for alpha_key in cur_loss.keys():
-                            cur_loss[alpha_key] += loss_tmp[key][alpha_key]
-                total_cnt += self.dataloader.batch_size
-                tmp_cnt += self.dataloader.batch_size
-                if tmp_cnt // multiply_factor >= 1:
-                    alpha_update_iter += 1
-                    tmp_cnt = 0
-
-                    best_alphas = self._get_best_alpha(self.absorb_to_layer, loss_alphas, self.shared_criterion)
-                    for key in best_alphas.keys():
-                        logger.info(f"Auto alpha update iter: {alpha_update_iter}, {key}: {best_alphas[key]}")
-                    absorb_input_scales, weight_scales = self._cal_scales(
-                        self.absorb_to_layer, self.input_maxes_abs, best_alphas, tuning=True
-                    )
-                    self._update_scales_for_auto(absorb_input_scales, weight_scales)
-                    # self.weight_scale_dict = {}
-                if total_cnt >= self.calib_sample_num:
-                    break
+                self._update_scales_for_auto(absorb_input_scales, weight_scales)
+                # does not need to reset the weight_scale_dict, because use the weight of ori_layer, no change
+                # self.weight_scale_dict = {}
+            if total_cnt >= self.calib_sample_num:
+                break
 
         best_alphas = self._get_best_alpha(self.absorb_to_layer, loss_alphas, self.shared_criterion)
         for key in best_alphas.keys():
@@ -663,85 +626,46 @@ class AutoAlpha:
             self._qdq_model_unwrapper_for_auto()
             return best_alphas
         bar = tqdm(self.dataloader, total=self.calib_sample_num, desc="auto tune alpha")
-        try:
-            for input, label in bar:
-                loss_alphas = {}
-                best_alphas_per_module = best_alphas
-                if isinstance(best_alphas, dict):
-                    for key in self.absorb_to_layer.keys():
-                        layer_names = self.absorb_to_layer[key]
-                        for layer_name in layer_names:
-                            best_alphas_per_module[layer_name] = best_alphas_per_module[key]
-                loss_tmp = self._get_one_batch_auto_loss_blockwise(
-                    input, self.alpha_space, best_alphas_per_module, self.input_maxes_abs
+        for input in bar:
+            if isinstance(input, tuple): # Extract input when both input and label are yielded by dataloader.
+                input = input[0]
+            loss_alphas = {}
+            best_alphas_per_module = best_alphas
+            if isinstance(best_alphas, dict):
+                for key in self.absorb_to_layer.keys():
+                    layer_names = self.absorb_to_layer[key]
+                    for layer_name in layer_names:
+                        best_alphas_per_module[layer_name] = best_alphas_per_module[key]
+            loss_tmp = self._get_one_batch_auto_loss_blockwise(
+                input, self.alpha_space, best_alphas_per_module, self.input_maxes_abs
+            )
+            if loss_alphas == {}:
+                for block_name in self.block_names:
+                    for key in self.block_to_module[block_name]:
+                        loss_alphas[key] = loss_tmp[block_name]
+            else:
+                for block_name in self.block_names:
+                    for key in self.block_to_module[block_name]:
+                        cur_loss = loss_alphas[key]
+                        for alpha_key in cur_loss.keys():
+                            cur_loss[alpha_key] += loss_tmp[block_name][alpha_key]
+
+            total_cnt += self.dataloader.batch_size
+            tmp_cnt += self.dataloader.batch_size
+            if tmp_cnt // multiply_factor >= 1:
+                alpha_update_iter += 1
+                tmp_cnt = 0
+                best_alphas = self._get_best_alpha(self.absorb_to_layer, loss_alphas, self.shared_criterion)
+                for key in best_alphas.keys():
+                    logger.info(f"Auto alpha update iter: {alpha_update_iter}, {key}: {best_alphas[key]}")
+                absorb_input_scales, weight_scales = self._cal_scales(
+                    self.absorb_to_layer, self.input_maxes_abs, best_alphas, tuning=True
                 )
-                if loss_alphas == {}:
-                    for block_name in self.block_names:
-                        for key in self.block_to_module[block_name]:
-                            loss_alphas[key] = loss_tmp[block_name]
-                else:
-                    for block_name in self.block_names:
-                        for key in self.block_to_module[block_name]:
-                            cur_loss = loss_alphas[key]
-                            for alpha_key in cur_loss.keys():
-                                cur_loss[alpha_key] += loss_tmp[block_name][alpha_key]
-
-                total_cnt += self.dataloader.batch_size
-                tmp_cnt += self.dataloader.batch_size
-                if tmp_cnt // multiply_factor >= 1:
-                    alpha_update_iter += 1
-                    tmp_cnt = 0
-                    best_alphas = self._get_best_alpha(self.absorb_to_layer, loss_alphas, self.shared_criterion)
-                    for key in best_alphas.keys():
-                        logger.info(f"Auto alpha update iter: {alpha_update_iter}, {key}: {best_alphas[key]}")
-                    absorb_input_scales, weight_scales = self._cal_scales(
-                        self.absorb_to_layer, self.input_maxes_abs, best_alphas, tuning=True
-                    )
-                    self._update_scales_for_auto(absorb_input_scales, weight_scales)
-                    # does not need to reset the weight_scale_dict, because use the weight of ori_layer, no change
-                    # self.weight_scale_dict = {}
-                if total_cnt >= self.calib_sample_num:
-                    break
-        except:
-            for input in bar:
-                loss_alphas = {}
-                best_alphas_per_module = best_alphas
-                if isinstance(best_alphas, dict):
-                    for key in self.absorb_to_layer.keys():
-                        layer_names = self.absorb_to_layer[key]
-                        for layer_name in layer_names:
-                            best_alphas_per_module[layer_name] = best_alphas_per_module[key]
-
-                loss_tmp = self._get_one_batch_auto_loss_blockwise(
-                    input, self.alpha_space, best_alphas_per_module, self.input_maxes_abs
-                )
-                if loss_alphas == {}:
-                    for block_name in self.block_names:
-                        for key in self.block_to_module[block_name]:
-                            loss_alphas[key] = loss_tmp[block_name]
-                else:
-                    for block_name in self.block_names:
-                        for key in self.block_to_module[block_name]:
-                            cur_loss = loss_alphas[key]
-                            for alpha_key in cur_loss.keys():
-                                cur_loss[alpha_key] += loss_tmp[block_name][alpha_key]
-
-                total_cnt += self.dataloader.batch_size
-                tmp_cnt += self.dataloader.batch_size
-                if tmp_cnt // multiply_factor >= 1:
-                    alpha_update_iter += 1
-                    tmp_cnt = 0
-
-                    best_alphas = self._get_best_alpha(self.absorb_to_layer, loss_alphas, self.shared_criterion)
-                    for key in best_alphas.keys():
-                        logger.info(f"Auto alpha update iter: {alpha_update_iter}, {key}: {best_alphas[key]}")
-                    absorb_input_scales, weight_scales = self._cal_scales(
-                        self.absorb_to_layer, self.input_maxes_abs, best_alphas, tuning=True
-                    )
-                    self._update_scales_for_auto(absorb_input_scales, weight_scales)
-                    # self.weight_scale_dict = {}
-                if total_cnt >= self.calib_sample_num:
-                    break
+                self._update_scales_for_auto(absorb_input_scales, weight_scales)
+                # does not need to reset the weight_scale_dict, because use the weight of ori_layer, no change
+                # self.weight_scale_dict = {}
+            if total_cnt >= self.calib_sample_num:
+                break
 
         best_alphas = self._get_best_alpha(self.absorb_to_layer, loss_alphas, self.shared_criterion)
         for key in best_alphas.keys():

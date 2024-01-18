@@ -134,62 +134,62 @@ def model_forward_per_sample(model, sample, device):
         return output
 
 
-# def quant_dequant_w(m, num_bits=8, scheme="sym"):
-#     eps = torch.finfo(torch.float32).eps
-#     if isinstance(m, torch.nn.Linear):
-#         x = m.weight
-#         tmp = torch.zeros(torch.max(x, dim=1).values.size())
-#         if scheme == "sym":
-#             q_min, q_max = -(2.0 ** (num_bits - 1)), 2.0 ** (num_bits - 1) - 1.0
-#             x_max = torch.max(torch.abs(x), dim=1).values
-#             scale = x_max / (float(q_max - q_min) / 2)
-#         else:
-#             q_min, q_max = 0, 2.0**num_bits - 1.0
-#             x_max = torch.maximum(torch.max(x, dim=1).values, tmp)
-#             x_min = torch.minimum(torch.min(x, dim=1).values, tmp)
-#             scale = (x_max - x_min) / (2**num_bits - 1)
-#
-#         scale = torch.clip(scale, min=eps)
-#
-#         if scheme == "sym":
-#             bias = 0
-#         else:
-#             bias = torch.round(0 - (torch.min(x, dim=1).values) / scale)
-#             bias = bias.unsqueeze(dim=-1)
-#         scale = scale.unsqueeze(dim=-1)
-#         q_x = torch.round(x / scale + bias)
-#         q_x.clamp_(q_min, q_max)
-#         return (q_x - bias) * scale
-#     elif isinstance(m, torch.nn.Conv2d):  ##TODO polish code
-#         x = m.weight
-#         x = torch.permute(x, (0, 2, 3, 1))
-#         x = x.reshape(-1, x.shape[-1])
-#         tmp = torch.zeros(torch.max(x, dim=0).values.size())
-#         if scheme == "sym":
-#             q_min, q_max = -(2.0 ** (num_bits - 1)), 2.0 ** (num_bits - 1) - 1.0
-#             x_max = torch.max(torch.abs(x), dim=0).values
-#             scale = x_max / (2 ** (num_bits - 1) - 1)
-#         else:
-#             q_min, q_max = 0, 2.0**num_bits - 1.0
-#             x_max = torch.maximum(torch.max(x, dim=0).values, tmp)
-#             x_min = torch.minimum(torch.min(x, dim=0).values, tmp)
-#             scale = (x_max - x_min) / (2**num_bits - 1)
-#         scale = torch.clip(scale, min=eps)
-#         if scheme == "sym":
-#             bias = 0
-#         else:
-#             bias = torch.round(0 - (torch.min(x, dim=0).values) / scale)
-#             bias = bias.unsqueeze(dim=0)
-#         scale = scale.unsqueeze(dim=0)
-#
-#         q_x = x / scale + bias
-#         q_x.clamp_(q_min, q_max).round_()
-#         q_dq_x = (q_x - bias) * scale
-#         q_dq_x = q_dq_x.view(m.weight.shape[0], m.weight.shape[2], m.weight.shape[3], m.weight.shape[1])
-#         q_dq_x = torch.permute(q_dq_x, (0, 3, 1, 2))
-#         return q_dq_x
-#     else:
-#         logger.warning("unsupported layer type, please have a check")
+def quant_dequant_w_v1(m, num_bits=8, scheme="sym"):
+    eps = torch.finfo(torch.float32).eps
+    if isinstance(m, torch.nn.Linear):
+        x = m.weight
+        tmp = torch.zeros(torch.max(x, dim=1).values.size())
+        if scheme == "sym":
+            q_min, q_max = -(2.0 ** (num_bits - 1)), 2.0 ** (num_bits - 1) - 1.0
+            x_max = torch.max(torch.abs(x), dim=1).values
+            scale = x_max / (float(q_max - q_min) / 2)
+        else:
+            q_min, q_max = 0, 2.0**num_bits - 1.0
+            x_max = torch.maximum(torch.max(x, dim=1).values, tmp)
+            x_min = torch.minimum(torch.min(x, dim=1).values, tmp)
+            scale = (x_max - x_min) / (2**num_bits - 1)
+
+        scale = torch.clip(scale, min=eps)
+
+        if scheme == "sym":
+            bias = 0
+        else:
+            bias = torch.round(0 - (torch.min(x, dim=1).values) / scale)
+            bias = bias.unsqueeze(dim=-1)
+        scale = scale.unsqueeze(dim=-1)
+        q_x = torch.round(x / scale + bias)
+        q_x.clamp_(q_min, q_max)
+        return (q_x - bias) * scale
+    elif isinstance(m, torch.nn.Conv2d):  ##TODO polish code
+        x = m.weight
+        x = torch.permute(x, (0, 2, 3, 1))
+        x = x.reshape(-1, x.shape[-1])
+        tmp = torch.zeros(torch.max(x, dim=0).values.size())
+        if scheme == "sym":
+            q_min, q_max = -(2.0 ** (num_bits - 1)), 2.0 ** (num_bits - 1) - 1.0
+            x_max = torch.max(torch.abs(x), dim=0).values
+            scale = x_max / (2 ** (num_bits - 1) - 1)
+        else:
+            q_min, q_max = 0, 2.0**num_bits - 1.0
+            x_max = torch.maximum(torch.max(x, dim=0).values, tmp)
+            x_min = torch.minimum(torch.min(x, dim=0).values, tmp)
+            scale = (x_max - x_min) / (2**num_bits - 1)
+        scale = torch.clip(scale, min=eps)
+        if scheme == "sym":
+            bias = 0
+        else:
+            bias = torch.round(0 - (torch.min(x, dim=0).values) / scale)
+            bias = bias.unsqueeze(dim=0)
+        scale = scale.unsqueeze(dim=0)
+
+        q_x = x / scale + bias
+        q_x.clamp_(q_min, q_max).round_()
+        q_dq_x = (q_x - bias) * scale
+        q_dq_x = q_dq_x.view(m.weight.shape[0], m.weight.shape[2], m.weight.shape[3], m.weight.shape[1])
+        q_dq_x = torch.permute(q_dq_x, (0, 3, 1, 2))
+        return q_dq_x
+    else:
+        logger.warning("unsupported layer type, please have a check")
 
 
 def quant_dequant_w(x, scale, num_bits=8):  ##default sym
@@ -200,19 +200,19 @@ def quant_dequant_w(x, scale, num_bits=8):  ##default sym
     return scale * q_x
 
 
-# def quant_dequant_x(x, max_x, min_x, num_bits=8):  ##default asym
-#     q_min, q_max = 0, 2.0**num_bits - 1.0
-#     if max_x is None or min_x is None:
-#         max_x, min_x = torch.max(x), torch.min(x)
-#     else:
-#         max_x = torch.max(max_x)
-#         min_x = torch.min(min_x)
-#     scale = (max_x - min_x) / (2**num_bits - 1)
-#     scale = torch.clip(scale, min=1e-5)
-#     bias = torch.round((0 - min_x) / scale)
-#     q_x = torch.round(x / scale + bias)
-#     q_x.clamp_(q_min, q_max)
-#     return scale * (q_x - bias)
+def quant_dequant_x_v1(x, max_x, min_x, num_bits=8):  ##default asym
+    q_min, q_max = 0, 2.0**num_bits - 1.0
+    if max_x is None or min_x is None:
+        max_x, min_x = torch.max(x), torch.min(x)
+    else:
+        max_x = torch.max(max_x)
+        min_x = torch.min(min_x)
+    scale = (max_x - min_x) / (2**num_bits - 1)
+    scale = torch.clip(scale, min=1e-5)
+    bias = torch.round((0 - min_x) / scale)
+    q_x = torch.round(x / scale + bias)
+    q_x.clamp_(q_min, q_max)
+    return scale * (q_x - bias)
 
 
 def quant_dequant_x(x, scale, bias, num_bits=8):  ##default asym
@@ -338,23 +338,23 @@ class WrapperLayer(torch.nn.Module):
         layer_copy = copy.deepcopy(self.orig_layer)
         if weight_scale is not None:
             layer_copy.weight *= weight_scale
-        q_dq_weight = quant_dequant_w(layer_copy)
+        q_dq_weight = quant_dequant_w_v1(layer_copy)
         layer_copy.weight.data.copy_(q_dq_weight)
         if input_scale is None:
-            x = quant_dequant_x(x, self.input_min, self.input_max)
+            x = quant_dequant_x_v1(x, self.input_min, self.input_max)
         else:
             x = input_scale * x
-            x = quant_dequant_x(x, self.input_min * input_scale, self.input_max * input_scale)  ##FIXME
+            x = quant_dequant_x_v1(x, self.input_min * input_scale, self.input_max * input_scale)  ##FIXME
         output = layer_copy(x)
         return output
 
     def q_dq_forward_blockwise(self, x, input_scale):
         layer_copy = copy.deepcopy(self.orig_layer)
         if input_scale is None:
-            x = quant_dequant_x(x, self.input_min, self.input_max)
+            x = quant_dequant_x_v1(x, self.input_min, self.input_max)
         else:
             x = input_scale * x
-            x = quant_dequant_x(x, self.input_min * input_scale, self.input_max * input_scale)  ##FIXME
+            x = quant_dequant_x_v1(x, self.input_min * input_scale, self.input_max * input_scale)  ##FIXME
         output = layer_copy(x)
         return output
 
@@ -416,7 +416,6 @@ TUNERS = {}
 
 def register_autotune(name):
     """Class decorator to register a smoothquant auto-tune subclass.
-
     :return: the class of register
     """
 
