@@ -180,6 +180,7 @@ class TorchSmoothQuant:
 
     def _export_sq_info(self, absorb_to_layer, input_maxes, alpha=0.5):
         from ..model_wrapper import SQLinearWrapper
+
         absorb_to_input_maxes = {}
         for key in absorb_to_layer.keys():
             layer_name = absorb_to_layer[key][0]
@@ -219,9 +220,8 @@ class TorchSmoothQuant:
                     "input_scale_after_mul": new_module.scale,
                     "input_zero_point_after_mul": new_module.zero_point,
                     "input_dtype": new_module.dtype,
-                    "weight_scale_after_mul": new_module._get_weight_scale()
+                    "weight_scale_after_mul": new_module._get_weight_scale(),
                 }
-
 
     def _cal_scales(self, absorb_to_layer, input_maxes, alpha=0.5):
         """Cal the adjust scales
@@ -450,8 +450,9 @@ class TorchSmoothQuant:
             return self.model
         example_inputs = self._get_example_input()
         if alpha == "auto":  ##TODO need to polish later
-            from .utils import TUNERS
             from . import auto_alpha, auto_alpha_new
+            from .utils import TUNERS
+
             auto_alpha_version = "version1"
             auto_alpha = TUNERS[auto_alpha_version](
                 self.model,

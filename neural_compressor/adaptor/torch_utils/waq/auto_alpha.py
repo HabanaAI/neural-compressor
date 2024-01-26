@@ -352,9 +352,7 @@ class AutoAlpha:
             fp32_output[name] = module.output
             module.output = None
         self._change_qdq_for_auto(enable=True)
-        absorb_input_scales, weight_scales = self._cal_scales(
-            self.absorb_to_layer, input_maxes, orig_best_alpha
-        )
+        absorb_input_scales, weight_scales = self._cal_scales(self.absorb_to_layer, input_maxes, orig_best_alpha)
         self._update_scales_for_auto(absorb_input_scales, weight_scales)
         forward_wrapper(self.model, input, self.device)  ##save quant_input
         for mod_name in module_names:  # save fp32 values
@@ -408,9 +406,7 @@ class AutoAlpha:
         for block_name in self.block_names:
             fp32_output[block_name] = self.block_outputs[block_name]
         self._change_qdq_for_auto(enable=True)
-        absorb_input_scales, weight_scales = self._cal_scales(
-            self.absorb_to_layer, input_maxes, orig_best_alpha
-        )
+        absorb_input_scales, weight_scales = self._cal_scales(self.absorb_to_layer, input_maxes, orig_best_alpha)
         self._update_scales_for_auto(absorb_input_scales, weight_scales)
         forward_wrapper(self.model, input, self.device)  ##save quant_input
         for mod_name in module_names:  # save fp32 values
@@ -544,7 +540,7 @@ class AutoAlpha:
             return best_alphas
         bar = tqdm(self.dataloader, total=self.calib_sample_num, desc="auto tune alpha")
         for input in bar:
-            if isinstance(input, tuple): # Extract input when both input and label are yielded by dataloader.
+            if isinstance(input, tuple):  # Extract input when both input and label are yielded by dataloader.
                 input = input[0]
             loss_alphas = {}
             best_alphas_per_module = best_alphas
@@ -612,7 +608,7 @@ class AutoAlpha:
             return best_alphas
         bar = tqdm(self.dataloader, total=self.calib_sample_num, desc="auto tune alpha")
         for input in bar:
-            if isinstance(input, tuple): # Extract input when both input and label are yielded by dataloader.
+            if isinstance(input, tuple):  # Extract input when both input and label are yielded by dataloader.
                 input = input[0]
             loss_alphas = {}
             best_alphas_per_module = best_alphas

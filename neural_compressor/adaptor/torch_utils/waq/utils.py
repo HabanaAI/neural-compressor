@@ -417,6 +417,7 @@ TUNERS = {}
 
 def register_autotune(name):
     """Class decorator to register a smoothquant auto-tune subclass.
+
     :return: the class of register
     """
 
