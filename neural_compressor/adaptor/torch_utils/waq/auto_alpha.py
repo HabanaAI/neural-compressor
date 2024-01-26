@@ -213,7 +213,7 @@ class AutoAlpha:
                 continue
             set_module(self.model, name, module.orig_layer)
 
-    def _cal_scales(self, absorb_to_layer, input_maxes, alpha=0.5, tuning=False):
+    def _cal_scales(self, absorb_to_layer, input_maxes, alpha=0.5):
         """Cal the adjust scales
         :param absorb_to_layer: A dict mapping absorb layer to smooth quantized layer
         :param input_maxes: The channel-wise input max info for layers
@@ -241,15 +241,6 @@ class AutoAlpha:
                 weight_max_per_channel = torch.max(torch.abs(torch.cat(weights, dim=0)), dim=0)[0]
                 if self.weight_clip:
                     weight_max_per_channel = weight_max_per_channel.clamp(min=1e-5)
-                if self.record_max_info and not tuning:
-                    # the input of layers with same absorb layer is the same.
-                    input_minmax = [self.input_mins[layer_names[0]], self.input_maxes[layer_names[0]]]
-                    self.max_value_info[key] = {}
-                    self.max_value_info[key]["alpha"] = alpha_tmp
-                    self.max_value_info[key]["input_minmax"] = input_minmax
-                    self.max_value_info[key]["weight_max"] = weight_max_per_channel
-                    self.max_value_info[key]["absorbed_layer"] = layer_names
-                    continue
 
                 if self._save_scale:
                     if key in self.weight_scale_dict and alpha_tmp in self.weight_scale_dict[key]:
@@ -287,10 +278,6 @@ class AutoAlpha:
             max_value = torch.clip(max_value, 1e-5)
         output = output / max_value  ##FIXME need copy not replace
         output_q = output_q / max_value
-        # if loss_type == "nsr":  # nsr is unused at this point.
-        #     output[output == 0] = 1e-5
-        #     loss = torch.sum(torch.log(1.0 + torch.abs(output - output_q) / torch.abs(output)))
-        #     return loss
         if loss_type == "abs":
             return torch.sum(torch.pow(torch.abs(output - output_q), 0.5))
         else:
@@ -357,7 +344,6 @@ class AutoAlpha:
         """
         self._change_qdq_for_auto(enable=False)
         module_names = self._get_sq_layer_names()
-
         forward_wrapper(self.model, input, self.device)  ##disable quant and get fp32 output
 
         fp32_output = {}
@@ -367,7 +353,7 @@ class AutoAlpha:
             module.output = None
         self._change_qdq_for_auto(enable=True)
         absorb_input_scales, weight_scales = self._cal_scales(
-            self.absorb_to_layer, input_maxes, orig_best_alpha, tuning=True
+            self.absorb_to_layer, input_maxes, orig_best_alpha
         )
         self._update_scales_for_auto(absorb_input_scales, weight_scales)
         forward_wrapper(self.model, input, self.device)  ##save quant_input
@@ -391,7 +377,7 @@ class AutoAlpha:
         # for name in module_names:
         #     loss_alphas[name]={}
         for alpha in alpha_space:
-            absorb_input_scales, weight_scales = self._cal_scales(self.absorb_to_layer, input_maxes, alpha, tuning=True)
+            absorb_input_scales, weight_scales = self._cal_scales(self.absorb_to_layer, input_maxes, alpha)
             self._update_scales_for_auto(absorb_input_scales, weight_scales)
             for name in module_names:
                 losses = loss_alphas[name]
@@ -423,7 +409,7 @@ class AutoAlpha:
             fp32_output[block_name] = self.block_outputs[block_name]
         self._change_qdq_for_auto(enable=True)
         absorb_input_scales, weight_scales = self._cal_scales(
-            self.absorb_to_layer, input_maxes, orig_best_alpha, tuning=True
+            self.absorb_to_layer, input_maxes, orig_best_alpha
         )
         self._update_scales_for_auto(absorb_input_scales, weight_scales)
         forward_wrapper(self.model, input, self.device)  ##save quant_input
@@ -448,7 +434,7 @@ class AutoAlpha:
         # for name in module_names:
         #     loss_alphas[name]={}
         for alpha in alpha_space:
-            absorb_input_scales, weight_scales = self._cal_scales(self.absorb_to_layer, input_maxes, alpha, tuning=True)
+            absorb_input_scales, weight_scales = self._cal_scales(self.absorb_to_layer, input_maxes, alpha)
             self._update_scales_for_auto(absorb_input_scales, weight_scales)
 
             for block_name in self.block_names:
@@ -465,7 +451,7 @@ class AutoAlpha:
                         module_copy = copy.deepcopy(module)
                     if module.weight_scale is not None:
                         module_copy.orig_layer.weight *= module.weight_scale
-                    q_dq_weight = quant_dequant_w(module_copy.orig_layer)
+                    q_dq_weight = quant_dequant_w_v1(module_copy.orig_layer)
                     module_copy.orig_layer.weight.data.copy_(q_dq_weight)
                     module_copy.do_blockwise = True
                     if not (name == block_name and len(self.block_to_module[block_name]) == 1):
@@ -531,9 +517,8 @@ class AutoAlpha:
         ##wrapper new module
         self._qdq_model_wrapper_for_auto(save_q_input=True)
 
-        # model scale calculation and update  -- lyt
         absorb_input_scales, weight_scales = self._cal_scales(
-            self.absorb_to_layer, self.input_maxes_abs, self.init_alpha, tuning=True
+            self.absorb_to_layer, self.input_maxes_abs, self.init_alpha
         )
         self._update_scales_for_auto(absorb_input_scales, weight_scales)
         return absorb_input_scales, weight_scales
@@ -587,7 +572,7 @@ class AutoAlpha:
                 for key in best_alphas.keys():
                     logger.info(f"Auto alpha update iter: {alpha_update_iter}, {key}: {best_alphas[key]}")
                 absorb_input_scales, weight_scales = self._cal_scales(
-                    self.absorb_to_layer, self.input_maxes_abs, best_alphas, tuning=True
+                    self.absorb_to_layer, self.input_maxes_abs, best_alphas
                 )
                 self._update_scales_for_auto(absorb_input_scales, weight_scales)
                 # does not need to reset the weight_scale_dict, because use the weight of ori_layer, no change
@@ -659,7 +644,7 @@ class AutoAlpha:
                 for key in best_alphas.keys():
                     logger.info(f"Auto alpha update iter: {alpha_update_iter}, {key}: {best_alphas[key]}")
                 absorb_input_scales, weight_scales = self._cal_scales(
-                    self.absorb_to_layer, self.input_maxes_abs, best_alphas, tuning=True
+                    self.absorb_to_layer, self.input_maxes_abs, best_alphas
                 )
                 self._update_scales_for_auto(absorb_input_scales, weight_scales)
                 # does not need to reset the weight_scale_dict, because use the weight of ori_layer, no change

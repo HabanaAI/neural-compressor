@@ -83,6 +83,7 @@ class TorchSmoothQuant:
         self.absorb_to_layer = {}
         self.weight_max_lb = 1e-5  ##weight max low bound
         self.weight_scale_dict = {}
+        self.sq_scale_info = {}
 
     def _get_device(self):
         """Get the model device
@@ -178,6 +179,7 @@ class TorchSmoothQuant:
                 layer.bias *= scale
 
     def _export_sq_info(self, absorb_to_layer, input_maxes, alpha=0.5):
+        from ..model_wrapper import SQLinearWrapper
         absorb_to_input_maxes = {}
         for key in absorb_to_layer.keys():
             layer_name = absorb_to_layer[key][0]
@@ -196,22 +198,30 @@ class TorchSmoothQuant:
 
             input_max = absorb_to_input_maxes[key]
             layer_names = absorb_to_layer[key]
-            weight_scale = cal_scale(input_max, weights, alpha_tmp)
+            # weight_scale = cal_scale(input_max, weights, alpha_tmp)
+            input_minmax = [self.input_mins[layer_names[0]].to("cpu"), self.input_maxes[layer_names[0]].to("cpu")]
+            abs_input_max = torch.max(torch.abs(input_minmax[0]), torch.abs(input_minmax[1]))
+            input_power = torch.pow(abs_input_max, alpha_tmp)
+            weight_power = torch.pow(weight_max_per_channel, 1 - alpha_tmp)
+            weight_scale = torch.clip(input_power / weight_power, min=1e-5)
             if alpha_tmp < 0:
                 weight_scale = torch.ones((1), device=self.device)
 
             input_scale = 1.0 / weight_scale
-            input_scale[weight_scale == 0] = 0
-
             # the input of layers with same absorb layer is the same.
-            input_minmax = [self.input_mins[layer_names[0]].to("cpu"), self.input_maxes[layer_names[0]].to("cpu")]
-            self.max_value_info[key] = {}
-            self.max_value_info[key]["alpha"] = alpha_tmp
-            self.max_value_info[key]["input_minmax"] = input_minmax
-            self.max_value_info[key]["weight_max"] = weight_max_per_channel.to("cpu")
-            self.max_value_info[key]["absorbed_layer"] = layer_names
-            self.max_value_info[key]["sq_input_scale"] = input_scale.to("cpu")
-            self.max_value_info[key]["sq_weight_scale"] = weight_scale.to("cpu")
+            for op_name in layer_names:
+                module = copy.deepcopy(get_module(self.model, op_name))
+                new_module = SQLinearWrapper(module, 1.0 / weight_scale, input_minmax, alpha_tmp)
+                self.sq_scale_info[op_name] = {}
+                self.sq_scale_info[op_name] = {
+                    "alpha": alpha_tmp,
+                    "input_scale_for_mul": input_scale.to("cpu"),
+                    "input_scale_after_mul": new_module.scale,
+                    "input_zero_point_after_mul": new_module.zero_point,
+                    "input_dtype": new_module.dtype,
+                    "weight_scale_after_mul": new_module._get_weight_scale()
+                }
+
 
     def _cal_scales(self, absorb_to_layer, input_maxes, alpha=0.5):
         """Cal the adjust scales
@@ -441,7 +451,7 @@ class TorchSmoothQuant:
         example_inputs = self._get_example_input()
         if alpha == "auto":  ##TODO need to polish later
             from .utils import TUNERS
-
+            from . import auto_alpha, auto_alpha_new
             auto_alpha_version = "version1"
             auto_alpha = TUNERS[auto_alpha_version](
                 self.model,
@@ -455,6 +465,8 @@ class TorchSmoothQuant:
                 **auto_alpha_args,
             )
             alpha = auto_alpha.tune()
+            input_maxes_abs = auto_alpha.input_maxes_abs
+            self.input_mins, self.input_maxes = auto_alpha.input_mins, auto_alpha.input_maxes
 
         elif need_calibration:
             calib = Calibration(self.model, self.dataloader, self.q_func, self.device)

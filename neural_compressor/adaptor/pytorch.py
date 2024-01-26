@@ -1803,7 +1803,8 @@ class TemplateAdaptor(Adaptor):
             **kwargs,
         )
         if self.sq.record_max_info:
-            model.sq_max_info = self.sq.max_value_info
+            #model.sq_max_info = self.sq.max_value_info
+            model.sq_scale_info = self.sq.sq_scale_info
         return model
 
     def _apply_pre_optimization(self, model, tune_cfg, recover=False):
@@ -3295,38 +3296,7 @@ class PyTorch_IPEXAdaptor(TemplateAdaptor):
         inplace = True if self.performance_only else False
 
         # fetch SmoothQuant scale info from pre-optimized model
-        sq_max_info = model.sq_max_info
-        if sq_max_info:
-            smoothquant_scale_info = {}
-            from neural_compressor.adaptor.torch_utils.waq import get_module
-
-            from .torch_utils.model_wrapper import SQLinearWrapper
-
-            for _, info in sq_max_info.items():
-                alpha = info["alpha"]
-                absorbed_layer = info["absorbed_layer"]
-                input_minmax = info["input_minmax"]
-                # for peft model,lora_B weights is 0.
-                weight_max = info["weight_max"]
-                if self.sq.weight_clip:
-                    weight_max = weight_max.clamp(min=1e-5)
-                abs_input_max = torch.max(torch.abs(input_minmax[0]), torch.abs(input_minmax[1]))
-                input_power = torch.pow(abs_input_max, alpha)
-                weight_power = torch.pow(weight_max, 1 - alpha)
-                scale = torch.clip(input_power / weight_power, min=1e-5)
-                for op_name in absorbed_layer:
-                    module = copy.deepcopy(get_module(q_model._model, op_name))
-                    new_module = SQLinearWrapper(module, 1.0 / scale, input_minmax, alpha)
-                    weight_scale = new_module._get_weight_scale()
-                    smoothquant_scale_info[op_name] = {
-                        "alpha": new_module.alpha,
-                        "input_scale_for_mul": new_module.input_scale,
-                        "input_scale_after_mul": new_module.scale,
-                        "input_zero_point_after_mul": new_module.zero_point,
-                        "input_dtype": new_module.dtype,
-                        "weight_scale_after_mul": weight_scale,
-                    }
-                    logger.debug(f"Current SmoothQuant alpha of {op_name} is {alpha}")
+        smoothquant_scale_info = model.sq_scale_info
 
         # Check save_qconf_summary part is a workaround for IPEX bug.
         # Sometimes the prepared model from get_op_capablitiy loss this attribute
