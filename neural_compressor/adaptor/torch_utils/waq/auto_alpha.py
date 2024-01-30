@@ -537,9 +537,9 @@ class AutoAlpha:
             return best_alphas
         bar = tqdm(self.dataloader, total=self.calib_sample_num, desc="auto tune alpha")
         for input in bar:
-            if isinstance(input, tuple) or isinstance(input, list):  
+            if isinstance(input, tuple) or isinstance(input, list):
                 if len(input) == 2:
-                    input, _ = input # Extract input when both input and label are yielded by dataloader.
+                    input, _ = input  # Extract input when both input and label are yielded by dataloader.
             loss_alphas = {}
             best_alphas_per_module = best_alphas
             if isinstance(best_alphas, dict):

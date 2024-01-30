@@ -210,13 +210,13 @@ class TorchSmoothQuant:
                 weight_scale = torch.ones((1), device=self.device)
 
             input_scale = 1.0 / weight_scale
-            
+
             self.max_value_info[key] = {
-                "alpha": alpha_tmp, 
+                "alpha": alpha_tmp,
                 "input_minmax": input_minmax,
                 "weight_max": weight_max_per_channel,
                 "absorbed_layer": layer_names,
-            } #max_value_info is used for pytorch backend and sq_scale_info is used for ipex backend.
+            }  # max_value_info is used for pytorch backend and sq_scale_info is used for ipex backend.
             # the input of layers with same absorb layer is the same.
             for op_name in layer_names:
                 module = copy.deepcopy(get_module(self.model, op_name))
@@ -452,8 +452,8 @@ class TorchSmoothQuant:
             return self.model
         example_inputs = self._get_example_input()
         if alpha == "auto":  ##TODO need to polish later
-            from .utils import TUNERS
             from . import auto_alpha
+            from .utils import TUNERS
 
             auto_alpha_version = "version1"
             self.auto_alpha_tuner = TUNERS[auto_alpha_version](

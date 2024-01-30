@@ -1536,7 +1536,14 @@ class TestInputConfig(unittest.TestCase):
             alpha="auto",
             calib_iter=1,
             folding=False,
-            auto_alpha_args={"alpha_min": 0.5, "alpha_max": 0.9, "alpha_step": 0.1, "shared_criterion": "mean", "init_alpha": 0.7, "n_samples": 32},
+            auto_alpha_args={
+                "alpha_min": 0.5,
+                "alpha_max": 0.9,
+                "alpha_step": 0.1,
+                "shared_criterion": "mean",
+                "init_alpha": 0.7,
+                "n_samples": 32,
+            },
         )
         assert sq.auto_alpha_tuner.init_alpha == 0.7
         assert sq.auto_alpha_tuner.alpha_min == 0.5
