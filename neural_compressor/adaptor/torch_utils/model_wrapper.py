@@ -66,7 +66,7 @@ class QDQLinear(torch.nn.Module):
 
     def qdq_weight(self):
         # update weight w/ QDQ
-        from neural_compressor.adaptor.torch_utils.waq import quant_dequant_w
+        from neural_compressor.adaptor.torch_utils.waq import quant_dequant_w_v1
 
         weith_qdq = quant_dequant_w_v1(self.module)
         self.module.weight = torch.nn.Parameter(weith_qdq)

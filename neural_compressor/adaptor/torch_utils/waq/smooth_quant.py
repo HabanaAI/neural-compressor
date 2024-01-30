@@ -450,7 +450,7 @@ class TorchSmoothQuant:
             return self.model
         example_inputs = self._get_example_input()
         if alpha == "auto":  ##TODO need to polish later
-            from . import auto_alpha, auto_alpha_new
+            from . import auto_alpha
             from .utils import TUNERS
 
             auto_alpha_version = "version1"
