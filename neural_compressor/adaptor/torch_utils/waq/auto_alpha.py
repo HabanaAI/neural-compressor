@@ -587,7 +587,7 @@ class AutoAlpha:
         return best_alphas
 
     def _auto_tune_alpha_blockwise(self):
-        """Perform blockwise-alpha-tuning to obtain layer-wise optimal alpha values and adjust parameters accordingly."""
+        """Perform blockwise-alpha-tuning to obtain optimal alpha values and adjust parameters accordingly."""
         logger.info("Start block-wise alpha tuning")
         self.block_inputs, self.block_outputs = {}, {}
 
