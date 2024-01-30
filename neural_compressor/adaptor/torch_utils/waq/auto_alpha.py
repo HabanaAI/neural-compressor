@@ -47,12 +47,10 @@ class AutoAlpha:
         dataloader,
         absorb_to_layer,
         op_types,
-        fp_layers,
         device,
         q_func,
         example_inputs,
         weight_clip=True,
-        record_max_info=True,
         alpha_min=0.3,
         alpha_max=0.7,
         alpha_step=0.1,
@@ -72,14 +70,13 @@ class AutoAlpha:
         self.shared_criterion = shared_criterion
         self.init_alpha = init_alpha
         self.loss_type = "blockwise" if do_blockwise else "model_wise"
-        self.calib_sample_num = n_samples
+        self.calib_sample_num = n_samples if n_samples else 32
         self.op_types = op_types
         self.absorb_to_layer = absorb_to_layer
         self.weight_scale_dict = {}
         self.q_func = q_func
         self.example_inputs = example_inputs
         self.max_value_info = {}  # to record max values for alpha tune
-        self.record_max_info = record_max_info[0] if isinstance(record_max_info, tuple) else record_max_info
         self.weight_clip = weight_clip[0] if isinstance(weight_clip, tuple) else weight_clip
         self.input_maxes = {}
         self.input_mins = {}
@@ -540,8 +537,9 @@ class AutoAlpha:
             return best_alphas
         bar = tqdm(self.dataloader, total=self.calib_sample_num, desc="auto tune alpha")
         for input in bar:
-            if isinstance(input, tuple):  # Extract input when both input and label are yielded by dataloader.
-                input = input[0]
+            if isinstance(input, tuple) or isinstance(input, list):  
+                if len(input) == 2:
+                    input, _ = input # Extract input when both input and label are yielded by dataloader.
             loss_alphas = {}
             best_alphas_per_module = best_alphas
             if isinstance(best_alphas, dict):

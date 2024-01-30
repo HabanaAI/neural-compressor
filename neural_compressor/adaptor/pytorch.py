@@ -1803,7 +1803,7 @@ class TemplateAdaptor(Adaptor):
             **kwargs,
         )
         if self.sq.record_max_info:
-            # model.sq_max_info = self.sq.max_value_info
+            model.sq_max_info = self.sq.max_value_info
             model.sq_scale_info = self.sq.sq_scale_info
         return model
 

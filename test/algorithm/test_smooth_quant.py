@@ -173,7 +173,7 @@ class TestSqConvOpFuseAuto(unittest.TestCase):
         model = Model()
 
         sq = TorchSmoothQuant(model, dummy_dataloader)
-        sq.transform(alpha="auto", calib_iter=3, folding=True)
+        sq.transform(alpha="auto", calib_iter=3, folding=True, op_types=[torch.nn.Linear, torch.nn.Conv2d])
         assert len(sq.absorb_to_layer) == 1
 
 
@@ -1536,11 +1536,10 @@ class TestInputConfig(unittest.TestCase):
             alpha="auto",
             calib_iter=1,
             folding=False,
-            auto_alpha_args={"alpha_min": 0.5, "alpha_max": 0.9, "alpha_step": 0.1, "shared_criterion": "mean"},
-            default_alpha=0.7,
+            auto_alpha_args={"alpha_min": 0.5, "alpha_max": 0.9, "alpha_step": 0.1, "shared_criterion": "mean", "init_alpha": 0.7, "n_samples": 32},
         )
-        assert sq.default_alpha == 0.7
-        assert sq.auto_alpha_args["alpha_min"] == 0.5
+        assert sq.auto_alpha_tuner.init_alpha == 0.7
+        assert sq.auto_alpha_tuner.alpha_min == 0.5
 
 
 class TestAlphaAutoLinearBlockwise(unittest.TestCase):
@@ -1566,8 +1565,8 @@ class TestAlphaAutoLinearBlockwise(unittest.TestCase):
         for i in range(12):
             op_name1 = "model.decoder.layers." + str(i) + ".self_attn.out_proj"
             op_name2 = "model.decoder.layers." + str(i) + ".fc1"
-            assert sq.alpha_per_layer[op_name1] == sq.alpha_per_layer[op_name2]
-        assert len(sq.block_names) == 13
+            assert sq.alpha[op_name1] == sq.alpha[op_name2]
+        assert len(sq.auto_alpha_tuner.block_names) == 13
 
 
 if __name__ == "__main__":

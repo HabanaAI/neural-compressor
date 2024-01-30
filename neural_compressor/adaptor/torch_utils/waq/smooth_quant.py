@@ -84,6 +84,7 @@ class TorchSmoothQuant:
         self.weight_max_lb = 1e-5  ##weight max low bound
         self.weight_scale_dict = {}
         self.sq_scale_info = {}
+        self.max_value_info = {}
 
     def _get_device(self):
         """Get the model device
@@ -209,6 +210,13 @@ class TorchSmoothQuant:
                 weight_scale = torch.ones((1), device=self.device)
 
             input_scale = 1.0 / weight_scale
+            
+            self.max_value_info[key] = {
+                "alpha": alpha_tmp, 
+                "input_minmax": input_minmax,
+                "weight_max": weight_max_per_channel,
+                "absorbed_layer": layer_names,
+            } #max_value_info is used for pytorch backend and sq_scale_info is used for ipex backend.
             # the input of layers with same absorb layer is the same.
             for op_name in layer_names:
                 module = copy.deepcopy(get_module(self.model, op_name))
@@ -324,7 +332,6 @@ class TorchSmoothQuant:
     @torch.no_grad()
     def _parse_absorb_to_layers(self, op_types, folding):
         str_op_types = [i.__name__ for i in op_types]
-
         self_absorb_layers = {}
         if self.insert_mul:
             self_absorb_layers = self._get_all_layer_names(op_types)  # TODO: only support linear now.
@@ -392,12 +399,7 @@ class TorchSmoothQuant:
             "alpha_max": 1.0,
             "alpha_step": 0.1,
             "shared_criterion": "mean",
-            "loss_type": "block_wise",
-            "use_quant_input": True,
-            "n_samples": None,  ##512 for cuda, 128 for cpu?
-            "bs": 8,
-            "half_precision": True,
-            "version": "latest",
+            "n_samples": 32,  ##512 for cuda, 128 for cpu?
         },
     ):
         """The main entry of smooth quant
@@ -413,7 +415,7 @@ class TorchSmoothQuant:
         :param auto_alpha_args: Hyperparameters used to set the alpha search space in SQ auto-tuning.
             By default, the search space is 0.0-1.0 with step_size 0.1.
             do_blockwise: Whether to do blockwise auto-tuning.
-        :param default_alpha: A hyperparameter that is used in SQ auto-tuning; by default it is 0.5.
+        :param init_alpha: A hyperparameter that is used in SQ auto-tuning; by default it is 0.5.
         :return: A FP32 model with the same architecture as the orig model but with different weight which will be
         benefit to quantization.
         """
@@ -450,24 +452,23 @@ class TorchSmoothQuant:
             return self.model
         example_inputs = self._get_example_input()
         if alpha == "auto":  ##TODO need to polish later
-            from . import auto_alpha
             from .utils import TUNERS
+            from . import auto_alpha
 
             auto_alpha_version = "version1"
-            auto_alpha = TUNERS[auto_alpha_version](
+            self.auto_alpha_tuner = TUNERS[auto_alpha_version](
                 self.model,
                 self.dataloader,
                 self.absorb_to_layer,
-                op_types=[torch.nn.Linear],
-                fp_layers=[],
+                op_types=op_types,
                 device=self.device,
                 q_func=self.q_func,
                 example_inputs=self.example_inputs,
                 **auto_alpha_args,
             )
-            alpha = auto_alpha.tune()
-            input_maxes_abs = auto_alpha.input_maxes_abs
-            self.input_mins, self.input_maxes = auto_alpha.input_mins, auto_alpha.input_maxes
+            self.alpha = self.auto_alpha_tuner.tune()
+            input_maxes_abs = self.auto_alpha_tuner.input_maxes_abs
+            self.input_mins, self.input_maxes = self.auto_alpha_tuner.input_mins, self.auto_alpha_tuner.input_maxes
 
         elif need_calibration:
             calib = Calibration(self.model, self.dataloader, self.q_func, self.device)
@@ -483,14 +484,14 @@ class TorchSmoothQuant:
             self._save_scale = False  ##TODO remove it later
 
         if self.record_max_info:
-            self._export_sq_info(self.absorb_to_layer, input_maxes_abs, alpha)
+            self._export_sq_info(self.absorb_to_layer, input_maxes_abs, self.alpha)
             # # max_info is recorded in self.max_value_info
             # self._adjust_parameters(self.absorb_to_layer, input_maxes_abs, alpha)
             self.model._smoothquant_optimized = False
             return self.model
 
         self.weight_scale_info, self.absorb_scales_info = self._adjust_parameters(
-            self.absorb_to_layer, input_maxes_abs, alpha
+            self.absorb_to_layer, input_maxes_abs, self.alpha
         )
         self.model._smoothquant_optimized = True
 
