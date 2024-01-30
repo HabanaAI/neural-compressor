@@ -12,8 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import torch
 import copy
+
+import torch
 
 from neural_compressor.adaptor.torch_utils.util import (
     fetch_module,
