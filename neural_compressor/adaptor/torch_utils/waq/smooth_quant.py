@@ -244,7 +244,7 @@ class TorchSmoothQuant:
         absorb_scales_info = {}
         for index, key in enumerate(absorb_to_layer.keys()):
             alpha_tmp = alpha[key] if isinstance(alpha, dict) else alpha
-            
+
             input_max = absorb_to_input_maxes[key]
             layer_names = absorb_to_layer[key]
             weights = []
@@ -314,7 +314,6 @@ class TorchSmoothQuant:
         self.alpha, self.percentile, self.calib_iter = alpha, percentile, calib_iter
         self.op_types, self.scales_per_op = op_types, scales_per_op
         return need_calib
-    
 
     @torch.no_grad()
     def _parse_absorb_to_layers(self, op_types, folding):
