@@ -206,8 +206,6 @@ class TorchSmoothQuant:
             input_power = torch.pow(abs_input_max, alpha_tmp)
             weight_power = torch.pow(weight_max_per_channel, 1 - alpha_tmp)
             weight_scale = torch.clip(input_power / weight_power, min=1e-5)
-            if alpha_tmp < 0:
-                weight_scale = torch.ones((1), device=self.device)
 
             input_scale = 1.0 / weight_scale
 
@@ -246,16 +244,14 @@ class TorchSmoothQuant:
         absorb_scales_info = {}
         for index, key in enumerate(absorb_to_layer.keys()):
             alpha_tmp = alpha[key] if isinstance(alpha, dict) else alpha
-            if alpha_tmp < 0:
-                scale = torch.ones((1), device=self.device)
-            else:
-                input_max = absorb_to_input_maxes[key]
-                layer_names = absorb_to_layer[key]
-                weights = []
-                for layer_name in layer_names:
-                    weight = reshape_in_channel_to_last(layer_name, self.model)
-                    weights.append(weight)
-                scale = cal_scale(input_max, weights, alpha_tmp)
+            
+            input_max = absorb_to_input_maxes[key]
+            layer_names = absorb_to_layer[key]
+            weights = []
+            for layer_name in layer_names:
+                weight = reshape_in_channel_to_last(layer_name, self.model)
+                weights.append(weight)
+            scale = cal_scale(input_max, weights, alpha_tmp)
             absorb_scales_info[key] = 1.0 / scale
             absorb_scales_info[key][scale == 0] = 0
             layer_names = absorb_to_layer[key]
@@ -315,19 +311,10 @@ class TorchSmoothQuant:
             if isinstance(alpha, float) or self.alpha == "auto":
                 need_calib = False
 
-        self.alpha, self.percentile = alpha, percentile
+        self.alpha, self.percentile, self.calib_iter = alpha, percentile, calib_iter
         self.op_types, self.scales_per_op = op_types, scales_per_op
-        self.calib_iter = calib_iter
         return need_calib
-
-    def _get_sq_layer_names(self):
-        """Get the all the hook sq layer
-        :return: All the sq layer names."""
-        ##TODO this may not fit for folding=False
-        module_names = []
-        for key in self.absorb_to_layer:
-            module_names += self.absorb_to_layer[key]
-        return module_names
+    
 
     @torch.no_grad()
     def _parse_absorb_to_layers(self, op_types, folding):

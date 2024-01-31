@@ -105,23 +105,23 @@ def model_forward(model, dataloader, iters, device):
                 break
 
 
-def get_block_names(model):
-    """Get the block names for transformers-like networks.
+# def get_block_names(model):
+#     """Get the block names for transformers-like networks.
 
-    Args:
-    model: The model.
+#     Args:
+#     model: The model.
 
-    Returns:
-    block_names: A list of block names.
-    """
-    block_names = []
-    target_m = None
-    for n, m in model.named_modules():
-        if hasattr(type(m), "__name__") and "ModuleList" in type(m).__name__:
-            target_m = (n, m)
-    for n, m in target_m[1].named_children():
-        block_names.append(target_m[0] + "." + n)
-    return block_names
+#     Returns:
+#     block_names: A list of block names.
+#     """
+#     block_names = []
+#     target_m = None
+#     for n, m in model.named_modules():
+#         if hasattr(type(m), "__name__") and "ModuleList" in type(m).__name__:
+#             target_m = (n, m)
+#     for n, m in target_m[1].named_children():
+#         block_names.append(target_m[0] + "." + n)
+#     return block_names
 
 
 def model_forward_per_sample(model, sample, device):
@@ -192,12 +192,12 @@ def quant_dequant_w_v1(m, num_bits=8, scheme="sym"):
         logger.warning("unsupported layer type, please have a check")
 
 
-def quant_dequant_w(x, scale, num_bits=8):  ##default sym
-    scale = scale.unsqueeze(dim=1)
-    q_min, q_max = -(2.0 ** (num_bits - 1)), 2.0 ** (num_bits - 1) - 1.0
-    q_x = torch.round(x / scale)
-    q_x.clamp_(q_min, q_max)
-    return scale * q_x
+# def quant_dequant_w(x, scale, num_bits=8):  ##default sym
+#     scale = scale.unsqueeze(dim=1)
+#     q_min, q_max = -(2.0 ** (num_bits - 1)), 2.0 ** (num_bits - 1) - 1.0
+#     q_x = torch.round(x / scale)
+#     q_x.clamp_(q_min, q_max)
+#     return scale * q_x
 
 
 def quant_dequant_x_v1(x, min_x=None, max_x=None, num_bits=8):
@@ -216,19 +216,19 @@ def quant_dequant_x_v1(x, min_x=None, max_x=None, num_bits=8):
     return scale * (q_x - bias)
 
 
-def quant_dequant_x(x, scale, bias, num_bits=8):  ##default asym
-    q_min, q_max = 0, 2.0**num_bits - 1.0
-    # if max_x is None or min_x is None:
-    #     max_x, min_x = torch.max(x), torch.min(x)
-    # else:
-    #     max_x = torch.max(max_x)
-    #     min_x = torch.min(min_x)
-    # scale = (max_x - min_x) / (2**num_bits - 1)
-    # scale = torch.clip(scale, min=eps)
-    # bias = torch.round((0 - min_x) / scale)
-    q_x = torch.round(x / scale + bias)
-    q_x.clamp_(q_min, q_max)
-    return scale * (q_x - bias)
+# def quant_dequant_x(x, scale, bias, num_bits=8):  ##default asym
+#     q_min, q_max = 0, 2.0**num_bits - 1.0
+#     # if max_x is None or min_x is None:
+#     #     max_x, min_x = torch.max(x), torch.min(x)
+#     # else:
+#     #     max_x = torch.max(max_x)
+#     #     min_x = torch.min(min_x)
+#     # scale = (max_x - min_x) / (2**num_bits - 1)
+#     # scale = torch.clip(scale, min=eps)
+#     # bias = torch.round((0 - min_x) / scale)
+#     q_x = torch.round(x / scale + bias)
+#     q_x.clamp_(q_min, q_max)
+#     return scale * (q_x - bias)
 
 
 def get_module(model, key):
