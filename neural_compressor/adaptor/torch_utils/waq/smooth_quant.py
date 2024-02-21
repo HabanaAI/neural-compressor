@@ -295,7 +295,8 @@ class TorchSmoothQuant:
         """
         need_calib = True
         from peft import PeftModel
-        is_peft, is_auto = isinstance(self.model, PeftModel), alpha=='auto'
+
+        is_peft, is_auto = isinstance(self.model, PeftModel), alpha == "auto"
         if len(self.input_maxes) == 0:  ## the first time
             need_calib = True
             self.alpha = alpha
