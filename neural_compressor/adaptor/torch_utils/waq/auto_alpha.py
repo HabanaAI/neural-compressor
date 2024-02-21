@@ -123,6 +123,7 @@ class AutoAlpha:
         else:
             return self._auto_tune_alpha()
 
+
     def get_blocks(self):
         """Obtain a list of blocks in block-wise tuning mode."""
         block_names = []
@@ -131,7 +132,9 @@ class AutoAlpha:
                 for nn, mm in m.named_children():
                     block_name = n + "." + nn
                     block_names.append(block_name)
+                break
         return block_names
+
 
     def _add_blockwise_observer(self, block_modules):
         """
