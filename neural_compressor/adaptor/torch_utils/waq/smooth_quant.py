@@ -294,6 +294,8 @@ class TorchSmoothQuant:
         :return:
         """
         need_calib = True
+        from peft import PeftModel
+        is_peft, is_auto = isinstance(self.model, PeftModel), alpha=='auto'
         if len(self.input_maxes) == 0:  ## the first time
             need_calib = True
             self.alpha = alpha
@@ -301,7 +303,7 @@ class TorchSmoothQuant:
             self.op_types = op_types
             self.scales_per_op = scales_per_op
             self.calib_iter = calib_iter
-            return need_calib if self.alpha != "auto" else False
+            return False if (is_auto and not is_peft) else need_calib
 
         if (
             self.percentile == percentile
