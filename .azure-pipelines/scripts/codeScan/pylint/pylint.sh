@@ -30,6 +30,7 @@ pip install torch==1.12.0 \
             fvcore \
             pymoo \
             onnxruntime_extensions \
+            peft \
             tf_slim \
             transformers \
             accelerate \
