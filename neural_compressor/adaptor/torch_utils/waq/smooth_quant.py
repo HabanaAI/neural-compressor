@@ -452,6 +452,7 @@ class TorchSmoothQuant:
                 op_types=op_types,
                 device=self.device,
                 q_func=self.q_func,
+                folding=folding,
                 example_inputs=self.example_inputs,
                 **auto_alpha_args,
             )

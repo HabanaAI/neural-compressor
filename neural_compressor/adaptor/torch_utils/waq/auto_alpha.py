@@ -56,6 +56,7 @@ class AutoAlpha:
         alpha_step=0.1,
         shared_criterion="mean",
         init_alpha=0.5,
+        folding=False,
         do_blockwise=False,
         n_samples=32,
     ):
@@ -75,6 +76,7 @@ class AutoAlpha:
         self.absorb_to_layer = absorb_to_layer
         self.weight_scale_dict = {}
         self.q_func = q_func
+        self.folding = folding
         self.example_inputs = example_inputs
         self.max_value_info = {}  # to record max values for alpha tune
         self.weight_clip = weight_clip[0] if isinstance(weight_clip, tuple) else weight_clip
@@ -92,9 +94,10 @@ class AutoAlpha:
         for key in self.input_mins.keys():
             self.input_maxes_abs[key] = torch.max(torch.abs(self.input_mins[key]), torch.abs(self.input_maxes[key]))
 
-        diff_modules = set(self.absorb_to_layer.keys()).difference(self.input_mins.keys())
-        for d in diff_modules:
-            del self.absorb_to_layer[d]
+        if not self.folding:
+            diff_modules = set(self.absorb_to_layer.keys()).difference(self.input_mins.keys())
+            for d in diff_modules:
+                del self.absorb_to_layer[d]
 
         scale_memo_use = 0
         for key in self.absorb_to_layer:
