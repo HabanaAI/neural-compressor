@@ -363,11 +363,9 @@ class TorchSmoothQuant:
                 input_mins, input_maxes = calib.calibrate(
                     1, op_types
                 )  ##TODO if using qfunc for calibration, it will calibrate twice
-            if (
-                self.dataloader is None
-            ):  ##use qfunc to calibrate, the input min could be used for fixed alpha transformation
-                self.input_mins = input_mins
-                self.input_maxes = input_maxes
+        #use qfunc to calibrate, the input min could be used for fixed alpha transformation
+            self.input_mins = input_mins
+            self.input_maxes = input_maxes
             diff_modules = set(self.absorb_to_layer.keys()).difference(input_mins.keys())
             for d in diff_modules:
                 del self.absorb_to_layer[d]
@@ -435,7 +433,8 @@ class TorchSmoothQuant:
             input_maxes_abs = {}
             for key in self.input_mins.keys():
                 input_maxes_abs[key] = torch.max(torch.abs(self.input_mins[key]), torch.abs(self.input_maxes[key]))
-            self.need_calibration = False
+            if self.q_func:
+                self.need_calibration = False # Avoid double-calibration in fixed-value alpha SQ.
 
         if self.absorb_to_layer is None:
             logger.warning("empty absorb_to_layer, smoothquant is ignored ")
@@ -446,7 +445,7 @@ class TorchSmoothQuant:
             from .utils import TUNERS
 
             auto_alpha_version = "version1"
-            self.auto_alpha_tuner = TUNERS[auto_alpha_version](
+            auto_alpha_tuner = TUNERS[auto_alpha_version](
                 self.model,
                 self.dataloader,
                 self.absorb_to_layer,
@@ -456,9 +455,11 @@ class TorchSmoothQuant:
                 example_inputs=self.example_inputs,
                 **auto_alpha_args,
             )
-            self.alpha = self.auto_alpha_tuner.tune()
-            input_maxes_abs = self.auto_alpha_tuner.input_maxes_abs
-            self.input_mins, self.input_maxes = self.auto_alpha_tuner.input_mins, self.auto_alpha_tuner.input_maxes
+            self.alpha = auto_alpha_tuner.tune()
+            input_maxes_abs = auto_alpha_tuner.input_maxes_abs
+            self.input_mins, self.input_maxes = auto_alpha_tuner.input_mins, auto_alpha_tuner.input_maxes
+            if auto_alpha_tuner.loss_type == 'blockwise':
+                self.block_names = auto_alpha_tuner.block_names
 
         elif self.need_calibration:
             calib = Calibration(self.model, self.dataloader, self.q_func, self.device)

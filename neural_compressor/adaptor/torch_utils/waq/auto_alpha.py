@@ -92,6 +92,10 @@ class AutoAlpha:
         for key in self.input_mins.keys():
             self.input_maxes_abs[key] = torch.max(torch.abs(self.input_mins[key]), torch.abs(self.input_maxes[key]))
 
+        diff_modules = set(self.absorb_to_layer.keys()).difference(self.input_mins.keys())
+        for d in diff_modules:
+            del self.absorb_to_layer[d]
+
         scale_memo_use = 0
         for key in self.absorb_to_layer:
             layer_name = self.absorb_to_layer[key][0]
