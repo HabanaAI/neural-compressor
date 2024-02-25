@@ -158,6 +158,7 @@ class TestLayerWiseQuant(unittest.TestCase):
             inputs = self.calibration_data_reader.get_next()
             if not inputs:
                 break
+            print(inputs)
             layerwise_q_out = self.inference(qmodel_lwq, inputs)
             q_out = self.inference(qmodel, inputs)
             print("test_gptq_layer_wise", layerwise_q_out[0])
