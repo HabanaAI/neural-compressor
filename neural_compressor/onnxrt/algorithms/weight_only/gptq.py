@@ -328,7 +328,7 @@ def gptq_quantize(
                 accuracy_level = weight_config[(node.name, node.op_type)].accuracy_level
             group_size = group_size if group_size != -1 else weight.shape[0]
             dtype = weight.dtype
-            print('gptq', node.name, weight, H)
+            print("gptq", node.name, weight, H)
             q_weight = _gptq(
                 weight,
                 H,

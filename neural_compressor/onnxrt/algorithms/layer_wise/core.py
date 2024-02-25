@@ -245,7 +245,7 @@ def _filter_data_reader_for_current_split_model(model: onnx.ModelProto, data_rea
     """
     filter_inputs = []
     input_names = [input.name for input in model.graph.input]
-    print('_filter_data_reader_for_current_split_model', input_names)
+    print("_filter_data_reader_for_current_split_model", input_names)
     while True:
         inputs = data_reader.get_next()
         if not inputs:
@@ -279,7 +279,7 @@ def _prepare_data_reader_for_next_split_model(
     data_reader_for_next_split_model = []
     session = ort.InferenceSession(model_path, providers=providers)
     output_names = [output.name for output in session.get_outputs()]
-    print('_prepare_data_reader_for_next_split_model', output_names)
+    print("_prepare_data_reader_for_next_split_model", output_names)
     while True:
         inputs = data_reader.get_next()
         if not inputs:
