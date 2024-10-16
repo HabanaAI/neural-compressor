@@ -21,7 +21,7 @@
     "react-plotly.js": "^2.6.0",
     "react-scripts": "^5.0.1",
     "sass": "^1.63.6",
-    "socket.io": "^4.7.1",
+    "socket.io": "^4.8.0",
     "socket.io-client": "^4.7.1",
     "web-vitals": "^2.1.4",
     "web-worker": "^1.2.0"
