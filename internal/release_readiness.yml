@@ -1,5 +1,0 @@
-releaseReadinessBranch: 'v1.20.0'
-parameters:
-    createBuildFile: true
-    squashCommits: false
-    updateMasterBranch: true
